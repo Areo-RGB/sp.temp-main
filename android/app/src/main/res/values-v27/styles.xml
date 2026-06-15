@@ -5,6 +5,7 @@
         <item name="android:windowActionBar">false</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
         <item name="android:windowBackground">#000000</item>
         <item name="android:colorAccent">#22C55E</item>
         <item name="android:navigationBarColor">#000000</item>

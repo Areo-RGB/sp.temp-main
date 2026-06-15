@@ -1,6 +1,7 @@
 package com.trapwire.racing
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.hardware.camera2.CaptureRequest
@@ -24,6 +25,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresApi
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.core.Camera
@@ -43,7 +45,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -72,6 +73,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -84,7 +86,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
@@ -111,7 +112,6 @@ import com.google.android.gms.nearby.connection.Payload
 import com.google.android.gms.nearby.connection.PayloadCallback
 import com.google.android.gms.nearby.connection.PayloadTransferUpdate
 import com.google.android.gms.nearby.connection.Strategy
-import com.google.android.gms.tasks.Tasks
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.database.DataSnapshot
@@ -768,7 +768,7 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
         var triggered by rememberSaveable { mutableStateOf(false) }
         var finalTime by rememberSaveable { mutableStateOf<Long?>(null) }
         var soundStartTime by rememberSaveable { mutableStateOf<Long?>(null) }
-        var micLevel by remember { mutableStateOf(0) }
+        var micLevel by remember { mutableIntStateOf(0) }
         var localTimer by remember { mutableLongStateOf(0L) }
         var aeLocked by rememberSaveable { mutableStateOf(false) }
         var cameraActive by rememberSaveable { mutableStateOf(false) }
@@ -1238,7 +1238,7 @@ private fun ClientSession(database: FirebaseDatabase, serverOffset: Long, camera
     var triggered by rememberSaveable { mutableStateOf(false) }
     var finalTime by rememberSaveable { mutableStateOf<Long?>(null) }
     var soundStartTime by rememberSaveable { mutableStateOf<Long?>(null) }
-    var micLevel by remember { mutableStateOf(0) }
+    var micLevel by remember { mutableIntStateOf(0) }
     var localTimer by remember { mutableLongStateOf(0L) }
     var aeLocked by rememberSaveable { mutableStateOf(false) }
     var cameraActive by rememberSaveable { mutableStateOf(false) }
@@ -1816,20 +1816,29 @@ private fun preferredPrimaryBuiltInMic(context: Context): AudioDeviceInfo? {
     if (builtInInputs.isEmpty()) return null
 
     val preferredAddress = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-        runCatching { audioManager.microphones }
-            .getOrNull()
-            ?.filter { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
-            ?.maxByOrNull { microphonePreferenceScore(it) }
-            ?.address
-            ?.takeIf { it.isNotBlank() }
+        preferredBuiltInMicAddress(audioManager)
     } else {
         null
     }
 
-    return preferredAddress?.let { address -> builtInInputs.firstOrNull { it.address == address } }
-        ?: builtInInputs.maxByOrNull { audioDevicePreferenceScore(it) }
+    val preferredDevice = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && preferredAddress != null) {
+        builtInInputs.firstOrNull { audioDeviceAddress(it) == preferredAddress }
+    } else {
+        null
+    }
+
+    return preferredDevice ?: builtInInputs.maxByOrNull { audioDevicePreferenceScore(it) }
 }
 
+@RequiresApi(Build.VERSION_CODES.P)
+private fun preferredBuiltInMicAddress(audioManager: AudioManager): String? = runCatching { audioManager.microphones }
+    .getOrNull()
+    ?.filter { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+    ?.maxByOrNull { microphonePreferenceScore(it) }
+    ?.address
+    ?.takeIf { it.isNotBlank() }
+
+@RequiresApi(Build.VERSION_CODES.P)
 private fun microphonePreferenceScore(microphoneInfo: MicrophoneInfo): Int {
     val hint = listOf(microphoneInfo.description, microphoneInfo.address)
         .joinToString(" ")
@@ -1838,11 +1847,15 @@ private fun microphonePreferenceScore(microphoneInfo: MicrophoneInfo): Int {
 }
 
 private fun audioDevicePreferenceScore(audioDeviceInfo: AudioDeviceInfo): Int {
-    val hint = listOf(audioDeviceInfo.productName?.toString().orEmpty(), audioDeviceInfo.address)
+    val address = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) audioDeviceAddress(audioDeviceInfo) else ""
+    val hint = listOf(audioDeviceInfo.productName?.toString().orEmpty(), address)
         .joinToString(" ")
         .lowercase(Locale.US)
     return audioInputHintScore(hint)
 }
+
+@RequiresApi(Build.VERSION_CODES.P)
+private fun audioDeviceAddress(audioDeviceInfo: AudioDeviceInfo): String = audioDeviceInfo.address
 
 private fun audioInputHintScore(hint: String): Int = when {
     "bottom" in hint -> 100
@@ -2627,6 +2640,7 @@ private fun toast(context: Context, message: String) {
 
 private fun Throwable.friendlyMessage(): String = localizedMessage ?: message ?: javaClass.simpleName
 
+@SuppressLint("UnsafeOptInUsageError")
 private fun setAeAwbLock(camera: Camera?, locked: Boolean) {
     val activeCamera = camera ?: return
     val options = CaptureRequestOptions.Builder()
