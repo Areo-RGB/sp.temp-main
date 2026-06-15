@@ -225,6 +225,8 @@ private const val NANOS_PER_MILLISECOND = 1_000_000L
 private const val CAMERA_SENSOR_TIMESTAMP_MAX_SKEW_NANOS = 5_000_000_000L
 private const val TRAPWIRE_STRIP_WIDTH_FRACTION = 0.05f
 private const val TRAPWIRE_CONFIRMATION_FRAME_COUNT = 2
+private const val TRAPWIRE_BACKGROUND_KEEP_WEIGHT = 0.90f
+private const val TRAPWIRE_BACKGROUND_NEW_WEIGHT = 1f - TRAPWIRE_BACKGROUND_KEEP_WEIGHT
 
 private fun monotonicNowNanos(): Long = SystemClock.elapsedRealtimeNanos()
 private fun monotonicNowMs(): Long = monotonicNowNanos() / NANOS_PER_MILLISECOND
@@ -245,7 +247,7 @@ private class MotionDetectionState {
     var localStartTime: Long? = null
 
     @Volatile
-    var previousStrip: ByteArray? = null
+    var backgroundStrip: FloatArray? = null
 
     @Volatile
     var consecutiveAboveThresholdFrames: Int = 0
@@ -254,9 +256,8 @@ private class MotionDetectionState {
     var firstAboveThresholdElapsed: Long? = null
 
     fun reset() {
-        previousStrip = null
-        consecutiveAboveThresholdFrames = 0
-        firstAboveThresholdElapsed = null
+        backgroundStrip = null
+        resetConfirmation()
     }
 
     fun resetConfirmation() {
@@ -2325,14 +2326,14 @@ private class TrapwireAnalyzer(
 
             val elapsed = elapsedMillisBetween(startTime, frameTimestampNanos)
             val currentStrip = image.centerLumaStrip()
-            val previousStrip = state.previousStrip
+            val background = state.backgroundStrip
 
-            if (previousStrip != null && previousStrip.size == currentStrip.size && elapsed > 200L) {
-                var diff = 0L
+            if (background != null && background.size == currentStrip.size && elapsed > 200L) {
+                var diff = 0.0
                 for (i in currentStrip.indices) {
-                    diff += kotlin.math.abs((currentStrip[i].toInt() and 0xFF) - (previousStrip[i].toInt() and 0xFF))
+                    diff += kotlin.math.abs((currentStrip[i].toInt() and 0xFF) - background[i])
                 }
-                val avgDiff = diff.toDouble() / currentStrip.size.toDouble()
+                val avgDiff = diff / currentStrip.size.toDouble()
                 if (avgDiff > thresholdForSensitivity(session.sensitivity)) {
                     if (state.consecutiveAboveThresholdFrames == 0) {
                         state.firstAboveThresholdElapsed = elapsed
@@ -2345,11 +2346,11 @@ private class TrapwireAnalyzer(
                 } else {
                     state.resetConfirmation()
                 }
+                background.updateFrom(currentStrip)
             } else {
                 state.resetConfirmation()
+                state.backgroundStrip = currentStrip.toFloatBackground()
             }
-
-            state.previousStrip = currentStrip
         } finally {
             image.close()
         }
@@ -2364,6 +2365,36 @@ private fun ImageProxy.frameTimestampNanosOrFallback(): Long {
     val skew = kotlin.math.abs(fallback - sensorTimestamp)
     return if (skew <= CAMERA_SENSOR_TIMESTAMP_MAX_SKEW_NANOS) sensorTimestamp else fallback
 }
+private fun ByteArray.toFloatBackground(): FloatArray {
+    return FloatArray(size) { index -> (this[index].toInt() and 0xFF).toFloat() }
+}
+
+private fun FloatArray.updateFrom(current: ByteArray) {
+    for (i in indices) {
+        val currentValue = (current[i].toInt() and 0xFF).toFloat()
+        this[i] = TRAPWIRE_BACKGROUND_KEEP_WEIGHT * this[i] + TRAPWIRE_BACKGROUND_NEW_WEIGHT * currentValue
+    }
+}
+
+private fun verticallyBlurredStrip(raw: ByteArray, stripWidth: Int, stripHeight: Int): ByteArray {
+    if (stripWidth <= 0 || stripHeight <= 0) return raw
+    val result = ByteArray(raw.size)
+    for (row in 0 until stripHeight) {
+        val prevRow = maxOf(0, row - 1)
+        val nextRow = minOf(stripHeight - 1, row + 1)
+        val rowBase = row * stripWidth
+        val prevBase = prevRow * stripWidth
+        val nextBase = nextRow * stripWidth
+        for (col in 0 until stripWidth) {
+            val top = raw[prevBase + col].toInt() and 0xFF
+            val mid = raw[rowBase + col].toInt() and 0xFF
+            val bottom = raw[nextBase + col].toInt() and 0xFF
+            result[rowBase + col] = ((top + mid + bottom) / 3).toByte()
+        }
+    }
+    return result
+}
+
 private fun ImageProxy.centerLumaStrip(): ByteArray {
     val plane = planes[0]
     val buffer = plane.buffer
@@ -2390,7 +2421,7 @@ private fun ImageProxy.centerLumaStrip(): ByteArray {
             result[out++] = if (index >= 0 && index < limit) buffer.get(index) else 0
         }
     }
-    return result
+    return verticallyBlurredStrip(result, actualStripWidth, safeHeight)
 }
 
 @Composable
