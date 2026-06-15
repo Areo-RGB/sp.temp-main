@@ -793,6 +793,7 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
         var micLevel by remember { mutableIntStateOf(0) }
         var localTimer by remember { mutableLongStateOf(0L) }
         var aeLocked by rememberSaveable { mutableStateOf(false) }
+        var previewEnabled by rememberSaveable { mutableStateOf(true) }
         var cameraActive by rememberSaveable { mutableStateOf(false) }
         var activeCamera by remember { mutableStateOf<Camera?>(null) }
 
@@ -958,6 +959,8 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
             finalTime = finalTime,
             cameraActive = cameraActive,
             aeLocked = aeLocked,
+            previewEnabled = previewEnabled,
+            onPreviewToggle = { previewEnabled = !previewEnabled },
             onAeLockToggle = {
                 val nextLocked = !aeLocked
                 aeLocked = nextLocked
@@ -968,6 +971,7 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
                     motionState = motionState,
                     cameraExecutor = cameraExecutor,
                     aeLocked = aeLocked,
+                    previewEnabled = previewEnabled,
                     onCameraReady = { camera ->
                         activeCamera = camera
                         cameraActive = true
@@ -1263,6 +1267,7 @@ private fun ClientSession(database: FirebaseDatabase, serverOffset: Long, camera
     var micLevel by remember { mutableIntStateOf(0) }
     var localTimer by remember { mutableLongStateOf(0L) }
     var aeLocked by rememberSaveable { mutableStateOf(false) }
+    var previewEnabled by rememberSaveable { mutableStateOf(true) }
     var cameraActive by rememberSaveable { mutableStateOf(false) }
     var activeCamera by remember { mutableStateOf<Camera?>(null) }
 
@@ -1367,6 +1372,8 @@ private fun ClientSession(database: FirebaseDatabase, serverOffset: Long, camera
         finalTime = finalTime,
         cameraActive = cameraActive,
         aeLocked = aeLocked,
+        previewEnabled = previewEnabled,
+        onPreviewToggle = { previewEnabled = !previewEnabled },
         onAeLockToggle = {
             val nextLocked = !aeLocked
             aeLocked = nextLocked
@@ -1377,6 +1384,7 @@ private fun ClientSession(database: FirebaseDatabase, serverOffset: Long, camera
                 motionState = motionState,
                 cameraExecutor = cameraExecutor,
                 aeLocked = aeLocked,
+                previewEnabled = previewEnabled,
                 onCameraReady = { camera ->
                     activeCamera = camera
                     cameraActive = true
@@ -1534,6 +1542,8 @@ private fun ClientDashboard(
     finalTime: Long?,
     cameraActive: Boolean,
     aeLocked: Boolean,
+    previewEnabled: Boolean,
+    onPreviewToggle: () -> Unit,
     onAeLockToggle: () -> Unit,
     cameraContent: @Composable () -> Unit,
 ) {
@@ -1595,6 +1605,29 @@ private fun ClientDashboard(
                         shape = RoundedCornerShape(14.dp),
                     ) {
                         Text(if (aeLocked) "Unlock" else "Lock", color = if (aeLocked) Amber400 else Green400, fontSize = 12.sp)
+                    }
+                }
+            }
+
+            SectionCard {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column(Modifier.weight(1f)) {
+                        Label("CAMERA PREVIEW")
+                        Text(
+                            if (previewEnabled) "Preview visible — analyzer running" else "Preview hidden — analyzer still running",
+                            color = Neutral100,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        TinyText("Turn preview off to reduce screen load while keeping finish detection active.")
+                    }
+                    Button(
+                        onClick = onPreviewToggle,
+                        enabled = cameraActive,
+                        colors = ButtonDefaults.buttonColors(containerColor = if (previewEnabled) Neutral800 else Blue500.copy(alpha = 0.18f)),
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        Text(if (previewEnabled) "Hide" else "Show", color = if (previewEnabled) Neutral100 else Blue500, fontSize = 12.sp)
                     }
                 }
             }
@@ -2200,6 +2233,7 @@ private fun CameraTrapwireView(
     motionState: MotionDetectionState,
     cameraExecutor: ExecutorService,
     aeLocked: Boolean,
+    previewEnabled: Boolean,
     onCameraReady: (Camera) -> Unit,
     onCameraStopped: () -> Unit,
     onElapsedDetected: (Long) -> Unit,
@@ -2231,19 +2265,35 @@ private fun CameraTrapwireView(
         return
     }
 
-    AndroidView(
-        factory = { ctx ->
-            PreviewView(ctx).apply {
-                scaleType = PreviewView.ScaleType.FILL_CENTER
-                implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-                previewView = this
-            }
-        },
-        modifier = Modifier.fillMaxSize(),
-    )
+    LaunchedEffect(previewEnabled) {
+        if (!previewEnabled) previewView = null
+    }
 
-    DisposableEffect(previewView, hasPermission, aeLocked) {
-        val view = previewView ?: return@DisposableEffect onDispose { }
+    if (previewEnabled) {
+        AndroidView(
+            factory = { ctx ->
+                PreviewView(ctx).apply {
+                    scaleType = PreviewView.ScaleType.FILL_CENTER
+                    implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                    previewView = this
+                }
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
+    } else {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Neutral950),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text("Preview off", color = Neutral100, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+            TinyText("Camera analyzer remains active")
+        }
+    }
+
+    DisposableEffect(previewView, hasPermission, aeLocked, previewEnabled) {
         val providerFuture = ProcessCameraProvider.getInstance(context)
         var provider: ProcessCameraProvider? = null
         var bound = false
@@ -2252,8 +2302,10 @@ private fun CameraTrapwireView(
             val cameraProvider = providerFuture.get()
             provider = cameraProvider
 
-            val preview = Preview.Builder().build().also {
-                it.setSurfaceProvider(view.surfaceProvider)
+            val preview = previewView?.let { view ->
+                Preview.Builder().build().also {
+                    it.setSurfaceProvider(view.surfaceProvider)
+                }
             }
 
             val analysis = ImageAnalysis.Builder()
@@ -2292,13 +2344,27 @@ private fun CameraTrapwireView(
 private fun bindCameraWithFallback(
     cameraProvider: ProcessCameraProvider,
     lifecycleOwner: androidx.lifecycle.LifecycleOwner,
-    preview: Preview,
+    preview: Preview?,
     analysis: ImageAnalysis,
 ): Camera {
     return runCatching {
-        cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_FRONT_CAMERA, preview, analysis)
+        bindCameraUseCases(cameraProvider, lifecycleOwner, CameraSelector.DEFAULT_FRONT_CAMERA, preview, analysis)
     }.getOrElse {
-        cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+        bindCameraUseCases(cameraProvider, lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+    }
+}
+
+private fun bindCameraUseCases(
+    cameraProvider: ProcessCameraProvider,
+    lifecycleOwner: androidx.lifecycle.LifecycleOwner,
+    selector: CameraSelector,
+    preview: Preview?,
+    analysis: ImageAnalysis,
+): Camera {
+    return if (preview != null) {
+        cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, analysis)
+    } else {
+        cameraProvider.bindToLifecycle(lifecycleOwner, selector, analysis)
     }
 }
 
