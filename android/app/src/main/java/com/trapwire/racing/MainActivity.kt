@@ -223,6 +223,8 @@ private data class StartBeepPattern(
 
 private const val NANOS_PER_MILLISECOND = 1_000_000L
 private const val CAMERA_SENSOR_TIMESTAMP_MAX_SKEW_NANOS = 5_000_000_000L
+private const val TRAPWIRE_STRIP_WIDTH_FRACTION = 0.05f
+private const val TRAPWIRE_CONFIRMATION_FRAME_COUNT = 2
 
 private fun monotonicNowNanos(): Long = SystemClock.elapsedRealtimeNanos()
 private fun monotonicNowMs(): Long = monotonicNowNanos() / NANOS_PER_MILLISECOND
@@ -245,8 +247,21 @@ private class MotionDetectionState {
     @Volatile
     var previousStrip: ByteArray? = null
 
+    @Volatile
+    var consecutiveAboveThresholdFrames: Int = 0
+
+    @Volatile
+    var firstAboveThresholdElapsed: Long? = null
+
     fun reset() {
         previousStrip = null
+        consecutiveAboveThresholdFrames = 0
+        firstAboveThresholdElapsed = null
+    }
+
+    fun resetConfirmation() {
+        consecutiveAboveThresholdFrames = 0
+        firstAboveThresholdElapsed = null
     }
 }
 
@@ -2319,9 +2334,19 @@ private class TrapwireAnalyzer(
                 }
                 val avgDiff = diff.toDouble() / currentStrip.size.toDouble()
                 if (avgDiff > thresholdForSensitivity(session.sensitivity)) {
-                    state.triggered = true
-                    onElapsedDetected(elapsed)
+                    if (state.consecutiveAboveThresholdFrames == 0) {
+                        state.firstAboveThresholdElapsed = elapsed
+                    }
+                    state.consecutiveAboveThresholdFrames += 1
+                    if (state.consecutiveAboveThresholdFrames >= TRAPWIRE_CONFIRMATION_FRAME_COUNT) {
+                        state.triggered = true
+                        onElapsedDetected(state.firstAboveThresholdElapsed ?: elapsed)
+                    }
+                } else {
+                    state.resetConfirmation()
                 }
+            } else {
+                state.resetConfirmation()
             }
 
             state.previousStrip = currentStrip
@@ -2343,17 +2368,26 @@ private fun ImageProxy.centerLumaStrip(): ByteArray {
     val plane = planes[0]
     val buffer = plane.buffer
     val rowStride = plane.rowStride
-    val pixelStride = plane.pixelStride
-    val stripWidth = maxOf(1, (width * 0.02f).roundToInt())
-    val stripX = width / 2 - stripWidth / 2
-    val result = ByteArray(stripWidth * height)
+    val pixelStride = maxOf(1, plane.pixelStride)
+    val safeWidth = width.coerceAtLeast(1)
+    val safeHeight = height.coerceAtLeast(1)
+    val stripWidth = maxOf(1, (safeWidth * TRAPWIRE_STRIP_WIDTH_FRACTION).roundToInt())
+    val stripX = (safeWidth / 2 - stripWidth / 2).coerceIn(0, safeWidth - 1)
+    val stripEndExclusive = minOf(safeWidth, stripX + stripWidth)
+    val actualStripWidth = maxOf(1, stripEndExclusive - stripX)
+    val result = ByteArray(actualStripWidth * safeHeight)
     var out = 0
+    val limit = buffer.limit()
 
-    for (row in 0 until height) {
+    for (row in 0 until safeHeight) {
         val rowStart = row * rowStride
-        for (col in 0 until stripWidth) {
-            val index = rowStart + (stripX + col) * pixelStride
-            result[out++] = if (index in 0 until buffer.limit()) buffer.get(index) else 0
+        if (rowStart < 0 || rowStart >= limit) {
+            repeat(actualStripWidth) { result[out++] = 0 }
+            continue
+        }
+        for (col in stripX until stripEndExclusive) {
+            val index = rowStart + col * pixelStride
+            result[out++] = if (index >= 0 && index < limit) buffer.get(index) else 0
         }
     }
     return result
