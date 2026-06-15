@@ -78,3 +78,6 @@ This repository contains a native Android/Kotlin Jetpack Compose port of the Tra
       - `trapwire-ops/scripts/windows/publish-debug-release.ps1 -Repo Areo-RGB/sp.temp-main`
     - Always use repo slug `Areo-RGB/sp.temp-main` unless the remote has intentionally changed.
     - If command filters block dispatching the workflow, tell the user exactly that and give them the one script command to run locally; do not imply the OTA version was bumped.
+
+### Debug OTA version numbers
+Use epoch-seconds/high monotonically increasing APK versionCode values for debug OTA releases. Never publish a tiny counter-based versionCode after a timestamp-based debug release, or phones will ignore it as a downgrade. Keep trapwire-debug.json versionCode/versionName aligned with the APK build.

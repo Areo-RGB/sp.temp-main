@@ -40,9 +40,17 @@ jobs:
           fi
           mkdir -p "$HOME/.android"
           printf '%s' "$ANDROID_DEBUG_KEYSTORE_B64" | tr -d '\r\n ' | base64 --decode --ignore-garbage > "$HOME/.android/debug.keystore"
+      - name: Compute debug version
+        id: debug_version
+        shell: bash
+        run: |
+          version_code="$(date +%s)"
+          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
+          echo "version_name=debug-$version_code" >> "$GITHUB_OUTPUT"
+
       - name: Build debug APK
         working-directory: android
-        run: gradle :app:assembleDebug -PciVersionCode=${{ github.run_number }} -PciVersionName=debug-${{ github.run_number }} -PupdateRepo=${{ github.repository }}
+        run: gradle :app:assembleDebug -PciVersionCode=${{ steps.debug_version.outputs.version_code }} -PciVersionName=${{ steps.debug_version.outputs.version_name }} -PupdateRepo=${{ github.repository }}
 
       - name: Prepare release files
         shell: bash
@@ -51,8 +59,8 @@ jobs:
           cp android/app/build/outputs/apk/debug/app-debug.apk release/trapwire-debug.apk
           cat > release/trapwire-debug.json <<EOF
           {
-            "versionCode": ${{ github.run_number }},
-            "versionName": "debug-${{ github.run_number }}",
+            "versionCode": ${{ steps.debug_version.outputs.version_code }},
+            "versionName": "${{ steps.debug_version.outputs.version_name }}",
             "apkAssetName": "trapwire-debug.apk",
             "commit": "${{ github.sha }}",
             "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
