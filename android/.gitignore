@@ -1,0 +1,10 @@
+.gradle/
+build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+*.iml
+
+# Generated from the Vite build during Android assemble
+app/src/main/assets/www/

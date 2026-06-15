@@ -1,0 +1,6 @@
+{
+  "name": "Trapwire Racing",
+  "description": "A realtime controller and client camera setup for a virtual finish line.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": []
+}

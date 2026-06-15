@@ -1,0 +1,1 @@
+{"permission":[{"script":"scripts/run-in-terminal-abort.ps1","rejectOnFailure":true,"timeout":10}],"success":[{"script":"scripts/run-in-terminal-reprimand.ps1","timeout":10,"failSilently":true}]}

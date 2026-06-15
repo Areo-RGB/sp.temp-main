@@ -1,0 +1,57 @@
+{
+  "entities": {
+    "Session": {
+      "title": "Session",
+      "description": "A racing session created by a controller.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the controller who created the session."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["waiting", "running", "finished"]
+        },
+        "startTime": {
+          "type": "integer",
+          "description": "Timestamp (ms) when the race started. Null if not started."
+        },
+        "createdAt": {
+          "type": "integer",
+          "description": "Server timestamp of creation."
+        }
+      },
+      "required": ["ownerId", "status", "createdAt"]
+    },
+    "Client": {
+      "title": "Client Registration",
+      "description": "A client device joined to a session.",
+      "type": "object",
+      "properties": {
+        "elapsedTime": {
+          "type": "number",
+          "description": "Elapsed time in ms after motion detection."
+        },
+        "joinedAt": {
+          "type": "integer"
+        }
+      },
+      "required": ["joinedAt"]
+    }
+  },
+  "firestore": {
+    "sessions/{sessionId}": {
+      "schema": {
+        "$ref": "#/entities/Session"
+      },
+      "description": "Stores the active race sessions."
+    },
+    "sessions/{sessionId}/clients/{clientId}": {
+      "schema": {
+        "$ref": "#/entities/Client"
+      },
+      "description": "Stores the clients connected to a given session."
+    }
+  }
+}
