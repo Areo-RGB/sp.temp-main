@@ -221,7 +221,13 @@ private data class StartBeepPattern(
     val zeroCrossHz: Float,
 )
 
-private fun monotonicNowMs(): Long = SystemClock.elapsedRealtime()
+private const val NANOS_PER_MILLISECOND = 1_000_000L
+private const val CAMERA_SENSOR_TIMESTAMP_MAX_SKEW_NANOS = 5_000_000_000L
+
+private fun monotonicNowNanos(): Long = SystemClock.elapsedRealtimeNanos()
+private fun monotonicNowMs(): Long = monotonicNowNanos() / NANOS_PER_MILLISECOND
+private fun nanosToMillis(nanos: Long): Long = nanos / NANOS_PER_MILLISECOND
+private fun elapsedMillisBetween(startNanos: Long, endNanos: Long): Long = nanosToMillis(endNanos - startNanos)
 
 private class MotionDetectionState {
     @Volatile
@@ -903,7 +909,7 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
         MicrophoneStartDetector(
             armed = sessionData?.status == "running" && soundStartTime == null && !triggered,
             micSensitivity = sessionData?.micSensitivity ?: DEFAULT_MIC_SENSITIVITY,
-            nowMs = { monotonicNowMs() },
+            nowNanos = { monotonicNowNanos() },
             onLevel = { micLevel = it },
             onStart = { startTime ->
                 if (soundStartTime == null && sessionData?.status == "running") {
@@ -917,8 +923,8 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
         LaunchedEffect(sessionData?.status, soundStartTime, triggered) {
             while (sessionData?.status == "running" && !triggered) {
                 val startTime = soundStartTime
-                val now = monotonicNowMs()
-                localTimer = if (startTime != null && now >= startTime) now - startTime else 0L
+                val now = monotonicNowNanos()
+                localTimer = if (startTime != null && now >= startTime) elapsedMillisBetween(startTime, now) else 0L
                 delay(33L)
             }
             if (sessionData?.status != "running") {
@@ -1312,7 +1318,7 @@ private fun ClientSession(database: FirebaseDatabase, serverOffset: Long, camera
     MicrophoneStartDetector(
         armed = sessionData?.status == "running" && soundStartTime == null && !triggered,
         micSensitivity = sessionData?.micSensitivity ?: DEFAULT_MIC_SENSITIVITY,
-        nowMs = { SystemClock.elapsedRealtime() },
+        nowNanos = { monotonicNowNanos() },
         onLevel = { micLevel = it },
         onStart = { startTime ->
             if (soundStartTime == null && sessionData?.status == "running") {
@@ -1326,8 +1332,8 @@ private fun ClientSession(database: FirebaseDatabase, serverOffset: Long, camera
     LaunchedEffect(sessionData?.status, soundStartTime, triggered) {
         while (sessionData?.status == "running" && !triggered) {
             val startTime = soundStartTime
-            val now = SystemClock.elapsedRealtime()
-            localTimer = if (startTime != null && now >= startTime) now - startTime else 0L
+            val now = monotonicNowNanos()
+            localTimer = if (startTime != null && now >= startTime) elapsedMillisBetween(startTime, now) else 0L
             delay(33L)
         }
         if (sessionData?.status != "running") {
@@ -1705,7 +1711,7 @@ private fun ClientDashboard(
 private fun MicrophoneStartDetector(
     armed: Boolean,
     micSensitivity: Int,
-    nowMs: () -> Long,
+    nowNanos: () -> Long,
     onLevel: (Int) -> Unit,
     onStart: (Long) -> Unit,
 ) {
@@ -1736,7 +1742,7 @@ private fun MicrophoneStartDetector(
                     beepPattern = beepPattern,
                     onLevel = { level -> mainHandler.post { onLevel(level) } },
                     onStart = { startTime -> mainHandler.post { onStart(startTime) } },
-                    nowMs = nowMs,
+                    nowNanos = nowNanos,
                 )
             }.onFailure {
                 mainHandler.post { toast(context, "Microphone listener failed: ${it.friendlyMessage()}") }
@@ -1873,7 +1879,7 @@ private fun listenForStartBeep(
     beepPattern: StartBeepPattern?,
     onLevel: (Int) -> Unit,
     onStart: (Long) -> Unit,
-    nowMs: () -> Long,
+    nowNanos: () -> Long,
 ) {
     val sampleRate = START_BEEP_SAMPLE_RATE
     val minBufferSize = AudioRecord.getMinBufferSize(
@@ -1909,12 +1915,12 @@ private fun listenForStartBeep(
 
             if (level >= threshold) {
                 if (pattern == null || rollingAudio == null) {
-                    onStart(nowMs())
+                    onStart(nowNanos())
                     return
                 }
 
                 if (rollingAudio.isReady && matchesStarterBeep(rollingAudio.samples, pattern)) {
-                    onStart(nowMs() - pattern.durationMs)
+                    onStart(nowNanos() - pattern.durationMs * NANOS_PER_MILLISECOND)
                     return
                 }
             }
@@ -2296,13 +2302,13 @@ private class TrapwireAnalyzer(
                 state.reset()
                 return
             }
-            val now = SystemClock.elapsedRealtime()
-            if (now < startTime) {
+            val frameTimestampNanos = image.frameTimestampNanosOrFallback()
+            if (frameTimestampNanos < startTime) {
                 state.reset()
                 return
             }
 
-            val elapsed = now - startTime
+            val elapsed = elapsedMillisBetween(startTime, frameTimestampNanos)
             val currentStrip = image.centerLumaStrip()
             val previousStrip = state.previousStrip
 
@@ -2325,6 +2331,14 @@ private class TrapwireAnalyzer(
     }
 }
 
+private fun ImageProxy.frameTimestampNanosOrFallback(): Long {
+    val fallback = monotonicNowNanos()
+    val sensorTimestamp = imageInfo.timestamp
+    if (sensorTimestamp <= 0L) return fallback
+
+    val skew = kotlin.math.abs(fallback - sensorTimestamp)
+    return if (skew <= CAMERA_SENSOR_TIMESTAMP_MAX_SKEW_NANOS) sensorTimestamp else fallback
+}
 private fun ImageProxy.centerLumaStrip(): ByteArray {
     val plane = planes[0]
     val buffer = plane.buffer
