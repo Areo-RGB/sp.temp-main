@@ -20,7 +20,7 @@ val ciVersionName = providers.gradleProperty("ciVersionName")
 
 val updateRepo = providers.gradleProperty("updateRepo")
     .orElse(providers.environmentVariable("GITHUB_REPOSITORY"))
-    .orElse("paziske/sp.temp-main")
+    .orElse("Areo-RGB/sp.temp-main")
     .get()
 
 android {

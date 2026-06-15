@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+/.agent-work/
+/.agentbridge/
+release/
+tmp-latest-debug-install/
+.idea/workspace.xml

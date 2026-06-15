@@ -1,0 +1,74 @@
+name: Debug APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-debug:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 9.4.1
+
+      - name: Restore local debug keystore
+        if: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 != '' }}
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.android"
+          echo "${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}" | base64 --decode > "$HOME/.android/debug.keystore"
+      - name: Build debug APK
+        working-directory: android
+        run: gradle :app:assembleDebug -PciVersionCode=${{ github.run_number }} -PciVersionName=debug-${{ github.run_number }} -PupdateRepo=${{ github.repository }}
+
+      - name: Prepare release files
+        shell: bash
+        run: |
+          mkdir -p release
+          cp android/app/build/outputs/apk/debug/app-debug.apk release/trapwire-debug.apk
+          cat > release/trapwire-debug.json <<EOF
+          {
+            "versionCode": ${{ github.run_number }},
+            "versionName": "debug-${{ github.run_number }}",
+            "apkAssetName": "trapwire-debug.apk",
+            "commit": "${{ github.sha }}",
+            "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trapwire-debug
+          path: release/*
+
+      - name: Publish latest debug release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: debug-latest
+          name: Latest debug APK
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          files: |
+            release/trapwire-debug.apk
+            release/trapwire-debug.json
+

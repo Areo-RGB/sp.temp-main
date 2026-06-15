@@ -4,14 +4,13 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.hardware.camera2.CaptureRequest
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaPlayer
 import android.media.MediaRecorder
+import android.media.MicrophoneInfo
 import android.media.ToneGenerator
 import android.os.Build
 import android.os.Bundle
@@ -138,6 +137,7 @@ private const val DEFAULT_SENSITIVITY = 70
 private const val DEFAULT_MIC_SENSITIVITY = 70
 private const val START_BEEP_SAMPLE_RATE = 44_100
 private const val START_BEEP_FRAME_MS = 10
+private const val STARTER_ARM_TO_BEEP_DELAY_MS = 2_000L
 private const val START_BEEP_PATTERN_SCORE = 0.64f
 private const val START_BEEP_FREQUENCY_TOLERANCE = 0.28f
 
@@ -213,15 +213,6 @@ private data class OfflineSessionSnapshot(
     val serverTime: Long,
 )
 
-private data class GpsClockState(
-    val offsetMs: Long? = null,
-    val fixAgeMs: Long? = null,
-    val provider: String? = null,
-    val message: String = "Waiting for a GPS time fix...",
-) {
-    val isReady: Boolean get() = offsetMs != null
-}
-
 private data class StartBeepPattern(
     val sampleRate: Int,
     val samples: ShortArray,
@@ -230,7 +221,7 @@ private data class StartBeepPattern(
     val zeroCrossHz: Float,
 )
 
-private fun GpsClockState.nowMs(): Long = System.currentTimeMillis() + (offsetMs ?: 0L)
+private fun monotonicNowMs(): Long = SystemClock.elapsedRealtime()
 
 private class MotionDetectionState {
     @Volatile
@@ -564,7 +555,12 @@ private fun ControllerSession(database: FirebaseDatabase, serverOffset: Long) {
                         "startTime" to null,
                     ),
                 ).awaitSafely(context)
-                playStarterBeep(context)
+                delay(STARTER_ARM_TO_BEEP_DELAY_MS)
+                val statusAfterArm = database.getReference("sessions/$code/status").get().await()
+                    .getValue(String::class.java)
+                if (statusAfterArm == "running") {
+                    playStarterBeep(context)
+                }
             }
         },
         onResetRace = {
@@ -585,18 +581,18 @@ private fun ControllerSession(database: FirebaseDatabase, serverOffset: Long) {
 @Composable
 private fun OfflineControllerSession() {
     NearbyPermissionsGate(
-        description = "Offline Nearby controller mode needs Bluetooth/Wi‑Fi plus precise location permissions to advertise the race room and lock to GPS time.",
+        description = "Offline Nearby controller mode needs Bluetooth/Wi‑Fi permissions to advertise the race room. Timing is measured locally on each client.",
     ) {
-        GpsTimeGate { gpsClock ->
-            val context = LocalContext.current
+        val context = LocalContext.current
         val nearby = remember(context) { Nearby.getConnectionsClient(context) }
+        val scope = rememberCoroutineScope()
         var code by rememberSaveable { mutableStateOf("123") }
         var sessionActive by rememberSaveable { mutableStateOf(false) }
         var sessionData by remember {
             mutableStateOf(
                 SessionData(
                     status = "waiting",
-                    createdAt = gpsClock.nowMs(),
+                    createdAt = System.currentTimeMillis(),
                     sensitivity = DEFAULT_SENSITIVITY,
                     micSensitivity = DEFAULT_MIC_SENSITIVITY,
                 ),
@@ -612,7 +608,7 @@ private fun OfflineControllerSession() {
             sendJsonPayload(
                 nearby = nearby,
                 endpointIds = targetIds,
-                json = nearbySnapshotJson(code, sessionData, clients.toList(), gpsClock.nowMs()),
+                json = nearbySnapshotJson(code, sessionData, clients.toList(), System.currentTimeMillis()),
             )
         }
 
@@ -624,7 +620,7 @@ private fun OfflineControllerSession() {
                     playBeep(durationMs = 80)
                     sessionData = SessionData(
                         status = "waiting",
-                        createdAt = gpsClock.nowMs(),
+                        createdAt = System.currentTimeMillis(),
                         sensitivity = DEFAULT_SENSITIVITY,
                         micSensitivity = DEFAULT_MIC_SENSITIVITY,
                     )
@@ -636,7 +632,7 @@ private fun OfflineControllerSession() {
                 accent = Amber400,
                 note = "Clients choose Offline LAN/Nearby and enter this same code.",
             )
-            return@GpsTimeGate
+            return@NearbyPermissionsGate
         }
 
         DisposableEffect(sessionActive, code) {
@@ -651,7 +647,7 @@ private fun OfflineControllerSession() {
                             clients.upsert(
                                 ClientData(
                                     id = clientId,
-                                    joinedAt = gpsClock.nowMs(),
+                                    joinedAt = System.currentTimeMillis(),
                                     deviceName = deviceName,
                                 ),
                             )
@@ -723,8 +719,8 @@ private fun OfflineControllerSession() {
             code = code,
             sessionData = sessionData,
             clients = clients,
-            serverOffset = gpsClock.offsetMs ?: 0L,
-            syncLabel = "GPS time offset",
+            serverOffset = 0L,
+            syncLabel = "Client monotonic timing",
             onSensitivityChange = { sensitivity ->
                 sessionData = sessionData.copy(sensitivity = sensitivity)
             },
@@ -732,28 +728,31 @@ private fun OfflineControllerSession() {
                 sessionData = sessionData.copy(micSensitivity = sensitivity)
             },
             onStartRace = {
-                sessionData = sessionData.copy(
-                    status = "running",
-                    startTime = null,
-                )
-                playStarterBeep(context)
+                scope.launch {
+                    sessionData = sessionData.copy(
+                        status = "running",
+                        startTime = null,
+                    )
+                    delay(STARTER_ARM_TO_BEEP_DELAY_MS)
+                    if (sessionData.status == "running" && sessionData.startTime == null) {
+                        playStarterBeep(context)
+                    }
+                }
             },
             onResetRace = {
                 sessionData = sessionData.copy(status = "waiting", startTime = null)
                 clients.replaceAll { it.copy(elapsedTime = null) }
             },
         )
-        }
     }
 }
 
 @Composable
 private fun OfflineClientSession(cameraExecutor: ExecutorService) {
     NearbyPermissionsGate(
-        description = "Offline Nearby client mode needs Bluetooth/Wi‑Fi plus precise location permissions to discover the controller and lock to GPS time.",
+        description = "Offline Nearby client mode needs Bluetooth/Wi‑Fi permissions to discover the controller. Timing is measured locally on this device.",
     ) {
-        GpsTimeGate { gpsClock ->
-            val context = LocalContext.current
+        val context = LocalContext.current
         val nearby = remember(context) { Nearby.getConnectionsClient(context) }
         val scope = rememberCoroutineScope()
         val clientId = rememberSaveable { randomClientId() }
@@ -766,7 +765,6 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
         var statusMessage by rememberSaveable { mutableStateOf("Enter the controller code, then search nearby.") }
         var connectedEndpointId by remember { mutableStateOf<String?>(null) }
         var sessionData by remember { mutableStateOf<SessionData?>(null) }
-        val gpsOffset = gpsClock.offsetMs ?: 0L
         var triggered by rememberSaveable { mutableStateOf(false) }
         var finalTime by rememberSaveable { mutableStateOf<Long?>(null) }
         var soundStartTime by rememberSaveable { mutableStateOf<Long?>(null) }
@@ -778,7 +776,6 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
 
         SideEffect {
             motionState.session = sessionData
-            motionState.serverOffset = gpsOffset
             motionState.triggered = triggered
             motionState.localStartTime = soundStartTime
         }
@@ -887,7 +884,7 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
                     statusMessage = "Search cancelled."
                 },
             )
-            return@GpsTimeGate
+            return@NearbyPermissionsGate
         }
 
         LaunchedEffect(sessionData?.status) {
@@ -906,7 +903,7 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
         MicrophoneStartDetector(
             armed = sessionData?.status == "running" && soundStartTime == null && !triggered,
             micSensitivity = sessionData?.micSensitivity ?: DEFAULT_MIC_SENSITIVITY,
-            nowMs = { gpsClock.nowMs() },
+            nowMs = { monotonicNowMs() },
             onLevel = { micLevel = it },
             onStart = { startTime ->
                 if (soundStartTime == null && sessionData?.status == "running") {
@@ -917,11 +914,11 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
             },
         )
 
-        LaunchedEffect(sessionData?.status, soundStartTime, gpsOffset, triggered) {
+        LaunchedEffect(sessionData?.status, soundStartTime, triggered) {
             while (sessionData?.status == "running" && !triggered) {
                 val startTime = soundStartTime
-                val gpsNow = gpsClock.nowMs()
-                localTimer = if (startTime != null && gpsNow >= startTime) gpsNow - startTime else 0L
+                val now = monotonicNowMs()
+                localTimer = if (startTime != null && now >= startTime) now - startTime else 0L
                 delay(33L)
             }
             if (sessionData?.status != "running") {
@@ -976,7 +973,6 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
                 )
             },
         )
-        }
     }
 }
 
@@ -1316,7 +1312,7 @@ private fun ClientSession(database: FirebaseDatabase, serverOffset: Long, camera
     MicrophoneStartDetector(
         armed = sessionData?.status == "running" && soundStartTime == null && !triggered,
         micSensitivity = sessionData?.micSensitivity ?: DEFAULT_MIC_SENSITIVITY,
-        nowMs = { System.currentTimeMillis() + serverOffset },
+        nowMs = { SystemClock.elapsedRealtime() },
         onLevel = { micLevel = it },
         onStart = { startTime ->
             if (soundStartTime == null && sessionData?.status == "running") {
@@ -1327,11 +1323,11 @@ private fun ClientSession(database: FirebaseDatabase, serverOffset: Long, camera
         },
     )
 
-    LaunchedEffect(sessionData?.status, soundStartTime, serverOffset, triggered) {
+    LaunchedEffect(sessionData?.status, soundStartTime, triggered) {
         while (sessionData?.status == "running" && !triggered) {
             val startTime = soundStartTime
-            val serverNow = System.currentTimeMillis() + serverOffset
-            localTimer = if (startTime != null && serverNow >= startTime) serverNow - startTime else 0L
+            val now = SystemClock.elapsedRealtime()
+            localTimer = if (startTime != null && now >= startTime) now - startTime else 0L
             delay(33L)
         }
         if (sessionData?.status != "running") {
@@ -1735,6 +1731,7 @@ private fun MicrophoneStartDetector(
         val thread = Thread {
             runCatching {
                 listenForStartBeep(
+                    context = context,
                     micSensitivity = micSensitivity,
                     beepPattern = beepPattern,
                     onLevel = { level -> mainHandler.post { onLevel(level) } },
@@ -1753,7 +1750,112 @@ private fun MicrophoneStartDetector(
 }
 
 @Suppress("MissingPermission")
+private fun createStartBeepAudioRecord(context: Context, sampleRate: Int, bufferSize: Int): AudioRecord? {
+    val preferredSources = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        intArrayOf(
+            MediaRecorder.AudioSource.UNPROCESSED,
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            MediaRecorder.AudioSource.MIC,
+        )
+    } else {
+        intArrayOf(
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            MediaRecorder.AudioSource.MIC,
+        )
+    }
+    val preferredMic = preferredPrimaryBuiltInMic(context)
+    val preferredDevices = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && preferredMic != null) {
+        arrayOf<AudioDeviceInfo?>(preferredMic, null)
+    } else {
+        arrayOf<AudioDeviceInfo?>(null)
+    }
+
+    for (source in preferredSources) {
+        for (preferredDevice in preferredDevices) {
+            val recorder = runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    AudioRecord.Builder()
+                        .setAudioSource(source)
+                        .setAudioFormat(
+                            AudioFormat.Builder()
+                                .setSampleRate(sampleRate)
+                                .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                                .build(),
+                        )
+                        .setBufferSizeInBytes(bufferSize)
+                        .build()
+                } else {
+                    AudioRecord(
+                        source,
+                        sampleRate,
+                        AudioFormat.CHANNEL_IN_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT,
+                        bufferSize,
+                    )
+                }
+            }.getOrNull() ?: continue
+
+            val preferredRouteAccepted = preferredDevice == null ||
+                Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                recorder.setPreferredDevice(preferredDevice)
+            if (recorder.state == AudioRecord.STATE_INITIALIZED && preferredRouteAccepted) return recorder
+            recorder.release()
+        }
+    }
+
+    return null
+}
+
+private fun preferredPrimaryBuiltInMic(context: Context): AudioDeviceInfo? {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return null
+
+    val audioManager = context.getSystemService(AudioManager::class.java) ?: return null
+    val builtInInputs = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+        .filter { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+    if (builtInInputs.isEmpty()) return null
+
+    val preferredAddress = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        runCatching { audioManager.microphones }
+            .getOrNull()
+            ?.filter { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+            ?.maxByOrNull { microphonePreferenceScore(it) }
+            ?.address
+            ?.takeIf { it.isNotBlank() }
+    } else {
+        null
+    }
+
+    return preferredAddress?.let { address -> builtInInputs.firstOrNull { it.address == address } }
+        ?: builtInInputs.maxByOrNull { audioDevicePreferenceScore(it) }
+}
+
+private fun microphonePreferenceScore(microphoneInfo: MicrophoneInfo): Int {
+    val hint = listOf(microphoneInfo.description, microphoneInfo.address)
+        .joinToString(" ")
+        .lowercase(Locale.US)
+    return audioInputHintScore(hint) + if (microphoneInfo.location == MicrophoneInfo.LOCATION_MAINBODY) 10 else 0
+}
+
+private fun audioDevicePreferenceScore(audioDeviceInfo: AudioDeviceInfo): Int {
+    val hint = listOf(audioDeviceInfo.productName?.toString().orEmpty(), audioDeviceInfo.address)
+        .joinToString(" ")
+        .lowercase(Locale.US)
+    return audioInputHintScore(hint)
+}
+
+private fun audioInputHintScore(hint: String): Int = when {
+    "bottom" in hint -> 100
+    "primary" in hint -> 90
+    "main" in hint -> 80
+    "built-in" in hint || "builtin" in hint -> 40
+    "mic" in hint -> 20
+    else -> 0
+}
+
+@Suppress("MissingPermission")
 private fun listenForStartBeep(
+    context: Context,
     micSensitivity: Int,
     beepPattern: StartBeepPattern?,
     onLevel: (Int) -> Unit,
@@ -1770,17 +1872,7 @@ private fun listenForStartBeep(
 
     val pattern = beepPattern?.takeIf { it.samples.isNotEmpty() && it.sampleRate == sampleRate }
     val bufferSize = maxOf(minBufferSize, sampleRate / 10)
-    val audioRecord = AudioRecord(
-        MediaRecorder.AudioSource.MIC,
-        sampleRate,
-        AudioFormat.CHANNEL_IN_MONO,
-        AudioFormat.ENCODING_PCM_16BIT,
-        bufferSize,
-    )
-    if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
-        audioRecord.release()
-        return
-    }
+    val audioRecord = createStartBeepAudioRecord(context, sampleRate, bufferSize) ?: return
 
     val samples = ShortArray(bufferSize / 2)
     val threshold = microphoneThresholdForSensitivity(micSensitivity)
@@ -2191,13 +2283,13 @@ private class TrapwireAnalyzer(
                 state.reset()
                 return
             }
-            val serverNow = System.currentTimeMillis() + state.serverOffset
-            if (serverNow < startTime) {
+            val now = SystemClock.elapsedRealtime()
+            if (now < startTime) {
                 state.reset()
                 return
             }
 
-            val elapsed = serverNow - startTime
+            val elapsed = now - startTime
             val currentStrip = image.centerLumaStrip()
             val previousStrip = state.previousStrip
 
@@ -2348,100 +2440,6 @@ private fun NearbyPermissionsGate(
     }
 }
 
-@Composable
-private fun GpsTimeGate(content: @Composable (GpsClockState) -> Unit) {
-    val gpsClock = rememberGpsClockState()
-    if (gpsClock.isReady) {
-        content(gpsClock)
-        return
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        SectionCard {
-            Text("GPS time needed", color = Neutral100, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Offline mode syncs all devices to GPS time. Keep location enabled and wait for a GPS fix before starting or joining.",
-                color = Neutral500,
-                fontSize = 14.sp,
-                lineHeight = 20.sp,
-            )
-            Spacer(Modifier.height(12.dp))
-            TinyText(gpsClock.message)
-        }
-    }
-}
-
-@Composable
-private fun rememberGpsClockState(): GpsClockState {
-    val context = LocalContext.current
-    var gpsClock by remember { mutableStateOf(GpsClockState()) }
-
-    DisposableEffect(context) {
-        val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val listener = LocationListener { location ->
-            gpsClock = location.toGpsClockState()
-        }
-
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-            runCatching { locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER) }
-                .getOrNull()
-                ?.let { gpsClock = it.toGpsClockState() }
-            runCatching {
-                locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    250L,
-                    0f,
-                    listener,
-                    Looper.getMainLooper(),
-                )
-            }.onFailure {
-                gpsClock = GpsClockState(message = "GPS provider unavailable: " + it.friendlyMessage())
-            }
-        } else {
-            gpsClock = GpsClockState(message = "Precise location access is required for GPS time sync.")
-        }
-
-        onDispose {
-            runCatching { locationManager.removeUpdates(listener) }
-        }
-    }
-
-    LaunchedEffect(gpsClock.offsetMs, gpsClock.fixAgeMs) {
-        while (gpsClock.isReady) {
-            delay(1_000L)
-            val current = gpsClock
-            gpsClock = current.copy(
-                fixAgeMs = current.fixAgeMs?.plus(1_000L),
-                message = gpsClockMessage(current.provider, current.fixAgeMs, current.offsetMs),
-            )
-        }
-    }
-
-    return gpsClock
-}
-
-private fun Location.toGpsClockState(): GpsClockState {
-    val fixAgeMs = ((SystemClock.elapsedRealtimeNanos() - elapsedRealtimeNanos) / 1_000_000L).coerceAtLeast(0L)
-    val gpsNowMs = time + fixAgeMs
-    val offsetMs = gpsNowMs - System.currentTimeMillis()
-    val providerName = provider ?: LocationManager.GPS_PROVIDER
-    return GpsClockState(
-        offsetMs = offsetMs,
-        fixAgeMs = fixAgeMs,
-        provider = providerName,
-        message = gpsClockMessage(providerName, fixAgeMs, offsetMs),
-    )
-}
-
-private fun gpsClockMessage(provider: String?, fixAgeMs: Long?, offsetMs: Long?): String {
-    return "GPS time locked via ${provider ?: "gps"}, fix age ${fixAgeMs ?: 0L}ms, device offset ${offsetMs ?: 0L}ms."
-}
 
 private fun sendJsonPayload(nearby: ConnectionsClient, endpointId: String, json: JSONObject) {
     sendJsonPayload(nearby, listOf(endpointId), json)

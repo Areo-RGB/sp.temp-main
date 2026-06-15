@@ -1,3 +1,43 @@
+param([string]$RepoRoot = "")
+. "$PSScriptRoot\_common.ps1"
+
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) { $RepoRoot = Find-RepoRoot }
+$manifest = Join-Path $RepoRoot "android\app\src\main\AndroidManifest.xml"
+$pathsDir = Join-Path $RepoRoot "android\app\src\main\res\xml"
+$pathsFile = Join-Path $pathsDir "trapwire_file_paths.xml"
+$updaterFile = Join-Path $RepoRoot "android\app\src\main\java\com\trapwire\racing\DebugUpdater.kt"
+
+if (-not (Test-Path $manifest)) { throw "Manifest not found: $manifest" }
+New-Item -ItemType Directory -Force -Path $pathsDir | Out-Null
+
+@'
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="updates" path="updates/" />
+</paths>
+'@ | Set-Content $pathsFile -Encoding UTF8
+
+$manifestText = Get-Content $manifest -Raw
+if ($manifestText -notmatch 'androidx\.core\.content\.FileProvider') {
+    $provider = @'
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/trapwire_file_paths" />
+        </provider>
+'@
+    $manifestText = $manifestText -replace "\s*</application>", "`n$provider    </application>"
+    Set-Content $manifest -Value $manifestText -Encoding UTF8
+    Write-Host "Added FileProvider to manifest." -ForegroundColor Green
+} else {
+    Write-Host "Manifest already contains FileProvider." -ForegroundColor Yellow
+}
+
+@'
 package com.trapwire.racing
 
 import android.content.Context
@@ -14,7 +54,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -52,28 +91,20 @@ fun DebugUpdateCard(modifier: Modifier = Modifier) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     var update by remember { mutableStateOf<DebugUpdateInfo?>(null) }
-    var message by remember { mutableStateOf("Tap ↻ to check for updates.") }
+    var message by remember { mutableStateOf<String?>(null) }
+    var checked by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
-    var hasChecked by remember { mutableStateOf(false) }
-
-    fun checkForUpdate(manual: Boolean) {
-        if (busy) return
-        scope.launch {
-            busy = true
-            message = if (manual) "Checking GitHub…" else "Checking for debug updates…"
-            val result = DebugUpdater.findUpdateResult()
-            hasChecked = true
-            update = result.update
-            message = result.message
-            busy = false
-        }
-    }
 
     LaunchedEffect(Unit) {
-        checkForUpdate(manual = false)
+        val found = DebugUpdater.findUpdate()
+        checked = true
+        update = found
+        if (found != null) message = "New debug build is ready."
     }
 
     val target = update
+    if (!checked || target == null) return
+
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
@@ -83,107 +114,57 @@ fun DebugUpdateCard(modifier: Modifier = Modifier) {
             modifier = Modifier.fillMaxWidth().padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(
-                        if (target == null) "Debug updates" else "Debug update ready",
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 17.sp,
-                    )
-                    Text(
-                        "Installed ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
-                    )
-                }
-                OutlinedButton(enabled = !busy, onClick = { checkForUpdate(manual = true) }) {
-                    if (busy) {
-                        CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.padding(end = 8.dp))
-                    }
-                    Text(if (busy) "…" else "↻")
-                }
-            }
-
-            Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-
-            if (target != null) {
-                Text(
-                    "${BuildConfig.VERSION_NAME} → ${target.versionName}. Downloads inside the app, then Android asks to confirm install.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 13.sp,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Button(
-                        enabled = !busy,
-                        onClick = {
-                            scope.launch {
-                                busy = true
-                                message = DebugUpdater.downloadAndInstall(context, target)
-                                busy = false
-                            }
-                        },
-                    ) { Text(if (busy) "Working..." else "Update") }
-                    OutlinedButton(enabled = !busy, onClick = {
-                        update = null
-                        message = if (hasChecked) "Update hidden. Tap ↻ to check again." else "Tap ↻ to check for updates."
-                    }) { Text("Later") }
-                }
+            Text("Debug update ready", fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+            Text(
+                "${BuildConfig.VERSION_NAME} → ${target.versionName}. Downloads inside the app, then Android asks to confirm install.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 13.sp,
+            )
+            message?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp) }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    enabled = !busy,
+                    onClick = {
+                        scope.launch {
+                            busy = true
+                            message = DebugUpdater.downloadAndInstall(context, target)
+                            busy = false
+                        }
+                    },
+                ) { Text(if (busy) "Working..." else "Update") }
+                OutlinedButton(enabled = !busy, onClick = { update = null }) { Text("Later") }
             }
         }
     }
 }
 
-data class DebugUpdateCheckResult(
-    val update: DebugUpdateInfo?,
-    val message: String,
-)
-
 object DebugUpdater {
-    suspend fun findUpdate(): DebugUpdateInfo? = findUpdateResult().update
-
-    suspend fun findUpdateResult(): DebugUpdateCheckResult = withContext(Dispatchers.IO) {
+    suspend fun findUpdate(): DebugUpdateInfo? = withContext(Dispatchers.IO) {
         runCatching {
             val repo = BuildConfig.UPDATE_REPO.trim()
-            if (!repo.contains('/')) {
-                return@runCatching DebugUpdateCheckResult(null, "Updater repo is not configured.")
-            }
+            if (!repo.contains('/')) return@runCatching null
             val releaseUrl = "https://api.github.com/repos/$repo/releases/tags/${BuildConfig.UPDATE_RELEASE_TAG}"
             val release = JSONObject(fetchString(releaseUrl))
             val assets = release.getJSONArray("assets")
             val metadataAsset = (0 until assets.length())
                 .map { assets.getJSONObject(it) }
                 .firstOrNull { it.optString("name") == BuildConfig.UPDATE_METADATA_ASSET }
-                ?: return@runCatching DebugUpdateCheckResult(null, "No debug metadata asset found on GitHub.")
+                ?: return@runCatching null
             val metadata = JSONObject(fetchString(metadataAsset.getString("browser_download_url")))
             val versionCode = metadata.optInt("versionCode", 0)
-            val versionName = metadata.optString("versionName", "debug-$versionCode")
-            if (versionCode <= BuildConfig.VERSION_CODE) {
-                return@runCatching DebugUpdateCheckResult(
-                    null,
-                    "Already up to date. Latest is $versionName ($versionCode).",
-                )
-            }
+            if (versionCode <= BuildConfig.VERSION_CODE) return@runCatching null
             val apkName = metadata.optString("apkAssetName", BuildConfig.UPDATE_APK_ASSET)
             val apkAsset = (0 until assets.length())
                 .map { assets.getJSONObject(it) }
                 .firstOrNull { it.optString("name") == apkName }
-                ?: return@runCatching DebugUpdateCheckResult(null, "Debug APK asset is missing on GitHub.")
-            DebugUpdateCheckResult(
-                update = DebugUpdateInfo(
-                    versionCode = versionCode,
-                    versionName = versionName,
-                    apkUrl = apkAsset.getString("browser_download_url"),
-                    apkName = apkName,
-                ),
-                message = "New debug build found: $versionName ($versionCode).",
+                ?: return@runCatching null
+            DebugUpdateInfo(
+                versionCode = versionCode,
+                versionName = metadata.optString("versionName", "debug-$versionCode"),
+                apkUrl = apkAsset.getString("browser_download_url"),
+                apkName = apkName,
             )
-        }.getOrElse { error ->
-            DebugUpdateCheckResult(null, "Update check failed: ${error.message ?: error::class.java.simpleName}")
-        }
+        }.getOrNull()
     }
 
     suspend fun downloadAndInstall(context: Context, update: DebugUpdateInfo): String {
@@ -235,3 +216,7 @@ object DebugUpdater {
         }
     }
 }
+'@ | Set-Content $updaterFile -Encoding UTF8
+
+Write-Host "Wrote lower-prompt DebugUpdater.kt + manifest provider + file paths." -ForegroundColor Green
+Write-Host "Now run: .\trapwire-ops\scripts\windows\build-debug.ps1" -ForegroundColor Cyan
