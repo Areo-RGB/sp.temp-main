@@ -23,8 +23,38 @@ val updateRepo = providers.gradleProperty("updateRepo")
     .orElse("Areo-RGB/sp.temp-main")
     .get()
 
+val debugKeystorePath = providers.gradleProperty("debugKeystore")
+    .orElse(providers.environmentVariable("ANDROID_DEBUG_KEYSTORE"))
+    .orElse(providers.provider { "${System.getProperty("user.home")}/.android/debug.keystore" })
+    .get()
+
+val debugKeystorePassword = providers.gradleProperty("debugKeystorePassword")
+    .orElse(providers.environmentVariable("ANDROID_DEBUG_KEYSTORE_PASSWORD"))
+    .orElse("android")
+    .get()
+
+val debugKeyAlias = providers.gradleProperty("debugKeyAlias")
+    .orElse(providers.environmentVariable("ANDROID_DEBUG_KEY_ALIAS"))
+    .orElse("androiddebugkey")
+    .get()
+
+val debugKeyPassword = providers.gradleProperty("debugKeyPassword")
+    .orElse(providers.environmentVariable("ANDROID_DEBUG_KEY_PASSWORD"))
+    .orElse("android")
+    .get()
+
 android {
     namespace = "com.trapwire.racing"
+
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file(debugKeystorePath)
+            storePassword = debugKeystorePassword
+            keyAlias = debugKeyAlias
+            keyPassword = debugKeyPassword
+        }
+    }
+
     compileSdk = 35
 
     defaultConfig {
@@ -79,3 +109,4 @@ dependencies {
     implementation("com.google.firebase:firebase-database")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
 }
+

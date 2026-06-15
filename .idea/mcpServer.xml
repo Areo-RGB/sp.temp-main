@@ -2,5 +2,51 @@
 <project version="4">
   <component name="McpServerSettings">
     <option name="autoStart" value="true" />
+    <option name="defaultsApplied" value="true" />
+    <option name="defaultsVersion" value="2" />
+    <option name="disabledToolIds">
+      <set>
+        <option value="cancel_sql_query" />
+        <option value="execute_sql_query" />
+        <option value="get_database_object_description" />
+        <option value="list_database_connections" />
+        <option value="list_database_schemas" />
+        <option value="list_recent_sql_queries" />
+        <option value="list_schema_object_kinds" />
+        <option value="list_schema_objects" />
+        <option value="preview_table_data" />
+        <option value="test_database_connection" />
+        <option value="create_scratch_file" />
+        <option value="get_active_file" />
+        <option value="get_open_editors" />
+        <option value="list_scratch_files" />
+        <option value="list_themes" />
+        <option value="open_in_editor" />
+        <option value="query_conversation_history" />
+        <option value="run_scratch_file" />
+        <option value="set_theme" />
+        <option value="show_diff" />
+        <option value="get_coverage" />
+        <option value="list_tests" />
+        <option value="run_tests" />
+        <option value="add_to_dictionary" />
+        <option value="format_code" />
+        <option value="debug_evaluate" />
+        <option value="debug_inspect_frame" />
+        <option value="debug_run_to_line" />
+        <option value="debug_snapshot" />
+        <option value="debug_step" />
+        <option value="debug_variable_detail" />
+        <option value="breakpoint_list" />
+        <option value="debug_session_list" />
+        <option value="breakpoint_manage" />
+        <option value="debug_read_console" />
+        <option value="debug_session_start" />
+        <option value="debug_session_stop" />
+        <option value="get_sonar_rule_description" />
+        <option value="get_notifications" />
+        <option value="run_sonarqube_analysis" />
+      </set>
+    </option>
   </component>
 </project>
