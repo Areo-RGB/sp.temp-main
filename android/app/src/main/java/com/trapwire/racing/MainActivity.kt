@@ -138,8 +138,10 @@ private const val DEFAULT_MIC_SENSITIVITY = 70
 private const val START_BEEP_SAMPLE_RATE = 44_100
 private const val START_BEEP_FRAME_MS = 10
 private const val STARTER_ARM_TO_BEEP_DELAY_MS = 2_000L
-private const val START_BEEP_PATTERN_SCORE = 0.64f
-private const val START_BEEP_FREQUENCY_TOLERANCE = 0.28f
+private const val START_BEEP_PATTERN_SCORE = 0.58f
+private const val START_BEEP_FREQUENCY_TOLERANCE = 0.45f
+private const val START_SHOT_PATTERN_MAX_MS = 240L
+private const val START_SHOT_PATTERN_MATCH_GRACE_MS = 350L
 
 private val Neutral950 = Color(0xFF0A0A0A)
 private val Neutral900 = Color(0xFF171717)
@@ -1945,6 +1947,8 @@ private fun listenForStartBeep(
     val samples = ShortArray(bufferSize / 2)
     val threshold = microphoneThresholdForSensitivity(micSensitivity)
     val rollingAudio = pattern?.let { RollingAudioWindow(it.samples.size) }
+    val patternGraceNanos = ((pattern?.durationMs ?: 0L) + START_SHOT_PATTERN_MATCH_GRACE_MS) * NANOS_PER_MILLISECOND
+    var candidateStartNanos: Long? = null
 
     try {
         audioRecord.startRecording()
@@ -1952,6 +1956,7 @@ private fun listenForStartBeep(
             val read = audioRecord.read(samples, 0, samples.size)
             if (read <= 0) continue
 
+            val readEndNanos = nowNanos()
             rollingAudio?.append(samples, read)
 
             var peak = 0
@@ -1964,12 +1969,22 @@ private fun listenForStartBeep(
 
             if (level >= threshold) {
                 if (pattern == null || rollingAudio == null) {
-                    onStart(nowNanos())
+                    onStart(readEndNanos)
                     return
                 }
 
-                if (rollingAudio.isReady && matchesStarterBeep(rollingAudio.samples, pattern)) {
-                    onStart(nowNanos() - pattern.durationMs * NANOS_PER_MILLISECOND)
+                if (candidateStartNanos == null) {
+                    val readDurationNanos = (read.toLong() * 1_000_000_000L) / sampleRate
+                    candidateStartNanos = readEndNanos - readDurationNanos
+                }
+            }
+
+            val candidate = candidateStartNanos
+            if (pattern != null && rollingAudio != null && candidate != null) {
+                if (readEndNanos - candidate > patternGraceNanos) {
+                    candidateStartNanos = null
+                } else if (rollingAudio.isReady && matchesStarterBeep(rollingAudio.samples, pattern)) {
+                    onStart(candidate)
                     return
                 }
             }
@@ -2013,11 +2028,11 @@ private class RollingAudioWindow(private val capacity: Int) {
 
 private fun loadStarterBeepPattern(context: Context): StartBeepPattern? {
     return runCatching {
-        val wavBytes = context.resources.openRawResource(R.raw.starter_beep_300ms).use { it.readBytes() }
-        val decoded = decodePcm16Wav(wavBytes) ?: return@runCatching null
+        val wavBytes = context.resources.openRawResource(R.raw.shot).use { it.readBytes() }
+        val decoded = decodePcmWav(wavBytes) ?: return@runCatching null
         val resampled = resamplePcm(decoded.samples, decoded.sampleRate, START_BEEP_SAMPLE_RATE)
-        val activeSamples = trimSilence(resampled)
-        if (activeSamples.size < START_BEEP_SAMPLE_RATE / 20) return@runCatching null
+        val activeSamples = focusStartShotPattern(trimSilence(resampled))
+        if (activeSamples.size < START_BEEP_SAMPLE_RATE / 100) return@runCatching null
 
         StartBeepPattern(
             sampleRate = START_BEEP_SAMPLE_RATE,
@@ -2029,7 +2044,7 @@ private fun loadStarterBeepPattern(context: Context): StartBeepPattern? {
     }.getOrNull()
 }
 
-private fun decodePcm16Wav(bytes: ByteArray): PcmWav? {
+private fun decodePcmWav(bytes: ByteArray): PcmWav? {
     if (bytes.size < 44) return null
     if (chunkName(bytes, 0) != "RIFF" || chunkName(bytes, 8) != "WAVE") return null
 
@@ -2066,17 +2081,28 @@ private fun decodePcm16Wav(bytes: ByteArray): PcmWav? {
         offset = chunkStart + size + (size and 1)
     }
 
-    if (audioFormat != 1 || channels <= 0 || sampleRate <= 0 || bitsPerSample != 16 || dataOffset < 0) return null
+    if (audioFormat != 1 || channels <= 0 || sampleRate <= 0 || dataOffset < 0) return null
+    if (bitsPerSample !in intArrayOf(8, 16, 24, 32)) return null
 
-    val frameSize = channels * 2
+    val bytesPerSample = bitsPerSample / 8
+    val frameSize = channels * bytesPerSample
+    if (frameSize <= 0) return null
+
     val frameCount = dataSize / frameSize
     val samples = ShortArray(frameCount)
     var position = dataOffset
     for (frame in 0 until frameCount) {
         var total = 0
         for (channel in 0 until channels) {
-            total += readLeShort(bytes, position).toInt()
-            position += 2
+            val value = when (bitsPerSample) {
+                8 -> ((bytes[position].toInt() and 0xFF) - 128) shl 8
+                16 -> readLeShort(bytes, position).toInt()
+                24 -> readSigned24Le(bytes, position) shr 8
+                32 -> readLeInt(bytes, position) shr 16
+                else -> 0
+            }
+            total += value
+            position += bytesPerSample
         }
         samples[frame] = (total / channels).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
     }
@@ -2098,6 +2124,14 @@ private fun readLeInt(bytes: ByteArray, offset: Int): Int {
         ((bytes[offset + 1].toInt() and 0xFF) shl 8) or
         ((bytes[offset + 2].toInt() and 0xFF) shl 16) or
         ((bytes[offset + 3].toInt() and 0xFF) shl 24)
+}
+
+private fun readSigned24Le(bytes: ByteArray, offset: Int): Int {
+    var value = (bytes[offset].toInt() and 0xFF) or
+        ((bytes[offset + 1].toInt() and 0xFF) shl 8) or
+        ((bytes[offset + 2].toInt() and 0xFF) shl 16)
+    if ((value and 0x800000) != 0) value = value or -0x1000000
+    return value
 }
 
 private fun resamplePcm(samples: ShortArray, fromRate: Int, toRate: Int): ShortArray {
@@ -2135,6 +2169,28 @@ private fun trimSilence(samples: ShortArray): ShortArray {
     return samples.copyOfRange(first, last + 1)
 }
 
+private fun focusStartShotPattern(samples: ShortArray): ShortArray {
+    if (samples.isEmpty()) return samples
+
+    val maxSamples = ((START_BEEP_SAMPLE_RATE * START_SHOT_PATTERN_MAX_MS) / 1_000L).toInt().coerceAtLeast(1)
+    if (samples.size <= maxSamples) return samples
+
+    var peakIndex = 0
+    var peak = 0
+    for (index in samples.indices) {
+        val value = kotlin.math.abs(samples[index].toInt())
+        if (value > peak) {
+            peak = value
+            peakIndex = index
+        }
+    }
+
+    val leadInSamples = START_BEEP_SAMPLE_RATE / 200
+    val start = (peakIndex - leadInSamples).coerceAtLeast(0)
+    val end = (start + maxSamples).coerceAtMost(samples.size)
+    return samples.copyOfRange(start, end)
+}
+
 private fun matchesStarterBeep(samples: ShortArray, pattern: StartBeepPattern): Boolean {
     val envelopeScore = cosineSimilarity(
         computeEnvelope(samples, pattern.sampleRate, START_BEEP_FRAME_MS),
@@ -2142,9 +2198,14 @@ private fun matchesStarterBeep(samples: ShortArray, pattern: StartBeepPattern): 
     )
     val waveScore = rectifiedWaveSimilarity(samples, pattern.samples)
     val measuredHz = estimateZeroCrossFrequency(samples, pattern.sampleRate)
-    val frequencyOk = pattern.zeroCrossHz < 80f || measuredHz <= 0f ||
+    val shortTransient = pattern.durationMs <= START_SHOT_PATTERN_MAX_MS
+    val frequencyOk = shortTransient || pattern.zeroCrossHz < 80f || measuredHz <= 0f ||
         (kotlin.math.abs(measuredHz - pattern.zeroCrossHz) / pattern.zeroCrossHz) <= START_BEEP_FREQUENCY_TOLERANCE
-    val confidence = (envelopeScore * 0.55f) + (waveScore * 0.45f)
+    val confidence = if (shortTransient) {
+        (envelopeScore * 0.70f) + (waveScore * 0.30f)
+    } else {
+        (envelopeScore * 0.55f) + (waveScore * 0.45f)
+    }
     return frequencyOk && confidence >= START_BEEP_PATTERN_SCORE
 }
 
@@ -2754,7 +2815,7 @@ private fun formatSeconds(ms: Long, decimals: Int = 3): String {
 
 private fun playStarterBeep(context: Context) {
     runCatching {
-        val player = MediaPlayer.create(context, R.raw.starter_beep_300ms)
+        val player = MediaPlayer.create(context, R.raw.shot)
         if (player == null) {
             playBeep(durationMs = 300)
             return
