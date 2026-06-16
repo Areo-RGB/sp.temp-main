@@ -10,4 +10,9 @@ coverage/
 /.agentbridge/
 release/
 tmp-latest-debug-install/
-.idea/workspace.xml
+
+# Local IDE/tool state
+.idea/
+.serena/
+.agentbridge/conversation.db
+.agentbridge/conversation.db-*
