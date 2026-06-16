@@ -1930,7 +1930,7 @@ private class RollingAudioWindow(private val capacity: Int) {
 
 private fun loadStarterBeepPattern(context: Context): StartBeepPattern? {
     return runCatching {
-        val wavBytes = context.resources.openRawResource(R.raw.shot).use { it.readBytes() }
+        val wavBytes = context.resources.openRawResource(R.raw.floraphonic_triangle_beep_short_4_185307).use { it.readBytes() }
         val decoded = decodePcmWav(wavBytes) ?: return@runCatching null
         val resampled = resamplePcm(decoded.samples, decoded.sampleRate, START_BEEP_SAMPLE_RATE)
         val activeSamples = focusStartShotPattern(trimSilence(resampled))
@@ -2693,7 +2693,7 @@ private fun formatSeconds(ms: Long, decimals: Int = 3): String {
 
 private fun playStarterBeep(context: Context) {
     runCatching {
-        val player = MediaPlayer.create(context, R.raw.shot)
+        val player = MediaPlayer.create(context, R.raw.floraphonic_triangle_beep_short_4_185307)
         if (player == null) {
             playBeep(durationMs = 300)
             return
