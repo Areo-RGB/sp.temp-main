@@ -1552,15 +1552,77 @@ private fun ClientDashboard(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(bottom = 20.dp),
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Column(
+        Box(
             modifier = Modifier
-                .padding(20.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+                .fillMaxWidth()
+                .height(220.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(Color.Black)
+                .border(1.dp, Neutral800, RoundedCornerShape(24.dp)),
+            contentAlignment = Alignment.Center,
         ) {
-            Row(
+            cameraContent()
+
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val lineColor = if (sessionData?.status == "running" && !triggered) Red500.copy(alpha = 0.85f) else Neutral400.copy(alpha = 0.55f)
+                drawLine(
+                    color = lineColor,
+                    start = Offset(size.width / 2f, 0f),
+                    end = Offset(size.width / 2f, size.height),
+                    strokeWidth = (size.width * 0.01f).coerceAtLeast(3f),
+                    cap = StrokeCap.Round,
+                )
+            }
+
+            if (sessionData?.status == "running" && !triggered) {
+                Text(
+                    if (timerStarted) formatSeconds(localTimer, decimals = 2) else "LISTENING...",
+                    color = Neutral100,
+                    fontSize = 26.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 24.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color.Black.copy(alpha = 0.65f))
+                        .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
+                        .padding(horizontal = 18.dp, vertical = 8.dp),
+                )
+            }
+
+            if (triggered && finalTime != null) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 34.dp)
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(Green500)
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text("✓", color = Color.Black, fontSize = 34.sp, fontWeight = FontWeight.Bold)
+                    Column {
+                        Text("TRIGGERED", color = Color.Black.copy(alpha = 0.72f), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text(formatSeconds(finalTime), color = Color.Black, fontSize = 30.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    }
+                }
+            }
+        }
+
+        Text(
+            "Align the vertical trapwire with the finish line or path. Motion across the line will stop the timer.",
+            color = Neutral500,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+            fontSize = 14.sp,
+        )
+
+        Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(22.dp))
@@ -1679,82 +1741,15 @@ private fun ClientDashboard(
                 }
             }
 
-            SectionCard {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Column(Modifier.weight(1f)) {
-                        Label("SCREEN WAKE LOCK")
-                        Text("Active — Android keeps the screen turned on.", color = Neutral100, fontSize = 14.sp)
-                    }
-                    StatusChip("STAY ON", Green400)
+        SectionCard {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Label("SCREEN WAKE LOCK")
+                    Text("Active — Android keeps the screen turned on.", color = Neutral100, fontSize = 14.sp)
                 }
+                StatusChip("STAY ON", Green400)
             }
         }
-
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 20.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .background(Color.Black)
-                .border(1.dp, Neutral800, RoundedCornerShape(24.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            cameraContent()
-
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val lineColor = if (sessionData?.status == "running" && !triggered) Red500.copy(alpha = 0.85f) else Neutral400.copy(alpha = 0.55f)
-                drawLine(
-                    color = lineColor,
-                    start = Offset(size.width / 2f, 0f),
-                    end = Offset(size.width / 2f, size.height),
-                    strokeWidth = (size.width * 0.01f).coerceAtLeast(3f),
-                    cap = StrokeCap.Round,
-                )
-            }
-
-            if (sessionData?.status == "running" && !triggered) {
-                Text(
-                    if (timerStarted) formatSeconds(localTimer, decimals = 2) else "LISTENING...",
-                    color = Neutral100,
-                    fontSize = 26.sp,
-                    fontFamily = FontFamily.Monospace,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 24.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(Color.Black.copy(alpha = 0.65f))
-                        .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
-                        .padding(horizontal = 18.dp, vertical = 8.dp),
-                )
-            }
-
-            if (triggered && finalTime != null) {
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 34.dp)
-                        .clip(RoundedCornerShape(22.dp))
-                        .background(Green500)
-                        .padding(horizontal = 20.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Text("✓", color = Color.Black, fontSize = 34.sp, fontWeight = FontWeight.Bold)
-                    Column {
-                        Text("TRIGGERED", color = Color.Black.copy(alpha = 0.72f), fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        Text(formatSeconds(finalTime), color = Color.Black, fontSize = 30.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                    }
-                }
-            }
-        }
-
-        Text(
-            "Align the vertical trapwire with the finish line or path. Motion across the line will stop the timer.",
-            color = Neutral500,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 26.dp, vertical = 14.dp),
-            fontSize = 14.sp,
-        )
     }
 }
 
