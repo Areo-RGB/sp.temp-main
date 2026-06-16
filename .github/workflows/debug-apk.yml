@@ -46,6 +46,10 @@ jobs:
           echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
           echo "version_name=debug-$version_code" >> "$GITHUB_OUTPUT"
 
+      - name: Make Gradle wrapper executable
+        working-directory: android
+        run: chmod +x gradlew
+
       - name: Build debug APK
         working-directory: android
         run: ./gradlew :app:assembleDebug -PciVersionCode=${{ steps.debug_version.outputs.version_code }} -PciVersionName=${{ steps.debug_version.outputs.version_name }} -PupdateRepo=${{ github.repository }}
