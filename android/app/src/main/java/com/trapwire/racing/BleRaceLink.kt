@@ -16,7 +16,6 @@ import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -25,6 +24,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.util.Log
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import java.nio.charset.StandardCharsets
@@ -38,6 +38,7 @@ private const val BLE_MTU_BYTES = 517
 private const val BLE_MAX_APP_PAYLOAD_BYTES = 480
 private const val BLE_SCAN_TIMEOUT_MS = 15_000L
 private const val BLE_SNAPSHOT_POLL_MS = 600L
+private const val BLE_LOG_TAG = "TrapwireBle"
 
 private fun Context.bluetoothManager(): BluetoothManager? = getSystemService(BluetoothManager::class.java)
 
@@ -62,6 +63,13 @@ private fun Context.hasBleAdvertisePermission(): Boolean {
 private fun bleRoomServiceData(code: String): ByteArray = "TW$code".toByteArray(StandardCharsets.UTF_8)
 
 private fun ByteArray.asBleRoomCode(): String = String(this, StandardCharsets.UTF_8).removePrefix("TW")
+
+private fun ScanResult.matchesTrapwireRoom(code: String): Boolean {
+    val record = scanRecord ?: return false
+    val serviceDataCode = record.getServiceData(BLE_RACE_SERVICE_PARCEL_UUID)?.asBleRoomCode()
+    if (serviceDataCode == code) return true
+    return record.serviceUuids?.any { it.uuid == BLE_RACE_SERVICE_UUID } == true
+}
 
 private fun JSONObject.toBleBytes(): ByteArray = toString().toByteArray(StandardCharsets.UTF_8)
 
@@ -99,6 +107,10 @@ class BleRaceHost(
         }
         if (!adapter.isEnabled) {
             onErrorOnMain("Bluetooth is off. Turn it on before advertising the room.")
+            return
+        }
+        if (!adapter.isMultipleAdvertisementSupported) {
+            onErrorOnMain("BLE peripheral mode is not supported on this controller device.")
             return
         }
         if (!context.hasBleConnectPermission() || !context.hasBleAdvertisePermission()) {
@@ -169,9 +181,14 @@ class BleRaceHost(
             .build()
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
+            .addServiceUuid(BLE_RACE_SERVICE_PARCEL_UUID)
+            .build()
+        val scanResponse = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
             .addServiceData(BLE_RACE_SERVICE_PARCEL_UUID, bleRoomServiceData(code))
             .build()
-        activeAdvertiser.startAdvertising(settings, data, callback)
+        Log.d(BLE_LOG_TAG, "Starting BLE room advertisement for Trapwire-$code")
+        activeAdvertiser.startAdvertising(settings, data, scanResponse, callback)
     }
 
     private val gattCallback = object : BluetoothGattServerCallback() {
@@ -268,15 +285,10 @@ class BleRaceClient(
         }
         scanner = activeScanner
         onStatusOnMain("Searching for BLE room Trapwire-$code...")
-        val filters = listOf(
-            ScanFilter.Builder()
-                .setServiceData(BLE_RACE_SERVICE_PARCEL_UUID, bleRoomServiceData(code))
-                .build(),
-        )
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
-        activeScanner.startScan(filters, settings, scanCallback)
+        activeScanner.startScan(null, settings, scanCallback)
         mainHandler.postDelayed(scanTimeoutRunnable, BLE_SCAN_TIMEOUT_MS)
     }
 
@@ -315,8 +327,7 @@ class BleRaceClient(
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val serviceData = result.scanRecord?.getServiceData(BLE_RACE_SERVICE_PARCEL_UUID) ?: return
-            if (serviceData.asBleRoomCode() != code) return
+            if (!result.matchesTrapwireRoom(code)) return
             stopScan()
             onStatusOnMain("Found BLE controller. Connecting...")
             connect(result.device)

@@ -10,6 +10,7 @@ fun requiredBlePermissions(): Array<String> {
         permissions += Manifest.permission.BLUETOOTH_SCAN
         permissions += Manifest.permission.BLUETOOTH_ADVERTISE
         permissions += Manifest.permission.BLUETOOTH_CONNECT
+        permissions += Manifest.permission.ACCESS_FINE_LOCATION
     } else {
         permissions += Manifest.permission.BLUETOOTH
         permissions += Manifest.permission.BLUETOOTH_ADMIN
