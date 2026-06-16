@@ -8,6 +8,9 @@ coverage/
 !.env.example
 /.agent-work/
 /.agentbridge/
+/.agent_apply_backups/
+/.agent_apply_logs/
+/apply_ble_transport.py
 release/
 tmp-latest-debug-install/
 

@@ -71,7 +71,7 @@ This repository contains a native Android/Kotlin Jetpack Compose port of the Tra
       4. wait for it when possible,
       5. report the resulting `debug-latest` version.
     - The OTA updater compares the installed APK `versionCode` with the `versionCode` in the rolling `debug-latest` release metadata, so no GitHub Actions run means no OTA-visible version bump.
-    - The GitHub workflow `.github/workflows/debug-apk.yml` sets `VERSION_CODE` / `VERSION_NAME` from `github.run_number`; every dispatched workflow run is therefore the version bump.
+    - The GitHub workflow `.github/workflows/debug-apk.yml` sets `VERSION_CODE` / `VERSION_NAME` from epoch seconds; every dispatched workflow run is therefore a monotonic OTA version bump.
     - Preferred script, and the default thing to run after app changes:
       - `trapwire-ops/scripts/windows/bump-debug-version-and-run-workflow.ps1 -Wait`
     - If the user asks for an immediate local release instead of workflow dispatch, use:

@@ -13,7 +13,7 @@ if ([string]::IsNullOrWhiteSpace($Ref)) {
 }
 
 Write-Host "Triggering $Workflow on $Repo@$Ref" -ForegroundColor Cyan
-Write-Host "Version bump note: debug-apk.yml uses github.run_number for VERSION_CODE/VERSION_NAME, so every workflow run bumps the in-app update version." -ForegroundColor DarkGray
+Write-Host "Version bump note: debug-apk.yml uses epoch seconds for VERSION_CODE/VERSION_NAME, so every workflow run bumps the in-app update version." -ForegroundColor DarkGray
 
 gh workflow run $Workflow --repo $Repo --ref $Ref
 if ($LASTEXITCODE -ne 0) { throw "Failed to trigger workflow $Workflow for $Repo@$Ref" }

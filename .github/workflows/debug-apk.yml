@@ -26,8 +26,6 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 9.4.1
 
       - name: Restore local debug keystore
         shell: bash
@@ -50,7 +48,7 @@ jobs:
 
       - name: Build debug APK
         working-directory: android
-        run: gradle :app:assembleDebug -PciVersionCode=${{ steps.debug_version.outputs.version_code }} -PciVersionName=${{ steps.debug_version.outputs.version_name }} -PupdateRepo=${{ github.repository }}
+        run: ./gradlew :app:assembleDebug -PciVersionCode=${{ steps.debug_version.outputs.version_code }} -PciVersionName=${{ steps.debug_version.outputs.version_name }} -PupdateRepo=${{ github.repository }}
 
       - name: Prepare release files
         shell: bash

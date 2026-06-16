@@ -3,11 +3,8 @@ package com.trapwire.racing
 import android.Manifest
 import android.os.Build
 
-fun requiredNearbyPermissions(): Array<String> {
-    val permissions = mutableListOf(
-        Manifest.permission.ACCESS_FINE_LOCATION,
-        Manifest.permission.ACCESS_COARSE_LOCATION,
-    )
+fun requiredBlePermissions(): Array<String> {
+    val permissions = mutableListOf<String>()
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         permissions += Manifest.permission.BLUETOOTH_SCAN
@@ -16,10 +13,7 @@ fun requiredNearbyPermissions(): Array<String> {
     } else {
         permissions += Manifest.permission.BLUETOOTH
         permissions += Manifest.permission.BLUETOOTH_ADMIN
-    }
-
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        permissions += Manifest.permission.NEARBY_WIFI_DEVICES
+        permissions += Manifest.permission.ACCESS_FINE_LOCATION
     }
 
     return permissions.distinct().toTypedArray()

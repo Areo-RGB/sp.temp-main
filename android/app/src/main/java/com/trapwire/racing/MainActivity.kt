@@ -99,19 +99,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import com.google.android.gms.nearby.Nearby
-import com.google.android.gms.nearby.connection.AdvertisingOptions
-import com.google.android.gms.nearby.connection.ConnectionInfo
-import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
-import com.google.android.gms.nearby.connection.ConnectionResolution
-import com.google.android.gms.nearby.connection.ConnectionsClient
-import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo
-import com.google.android.gms.nearby.connection.DiscoveryOptions
-import com.google.android.gms.nearby.connection.EndpointDiscoveryCallback
-import com.google.android.gms.nearby.connection.Payload
-import com.google.android.gms.nearby.connection.PayloadCallback
-import com.google.android.gms.nearby.connection.PayloadTransferUpdate
-import com.google.android.gms.nearby.connection.Strategy
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.database.DataSnapshot
@@ -131,8 +118,6 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 private const val DATABASE_URL = "https://realtime-db-b2264-default-rtdb.europe-west1.firebasedatabase.app"
-private const val NEARBY_SERVICE_ID = "com.trapwire.racing.nearby"
-private val NEARBY_STRATEGY: Strategy = Strategy.P2P_STAR
 private const val DEFAULT_SENSITIVITY = 70
 private const val DEFAULT_MIC_SENSITIVITY = 70
 private const val START_BEEP_SAMPLE_RATE = 44_100
@@ -432,14 +417,14 @@ private fun BackendSelectionScreen(
             )
 
             RoleButton(
-                title = "Offline Nearby",
-                subtitle = "Google Nearby Connections, no Firebase",
+                title = "Offline BLE",
+                subtitle = "BLE device-to-device, no Firebase",
                 symbol = "⌂",
                 tint = Amber400,
                 onClick = onOfflineSelected,
             )
 
-            TinyText("Nearby mode works device-to-device; keep the phones close and on the same local radio/Wi‑Fi environment.")
+            TinyText("BLE mode works phone-to-phone; keep devices close during join and race setup.")
         }
     }
 }
@@ -604,14 +589,15 @@ private fun ControllerSession(database: FirebaseDatabase, serverOffset: Long) {
 
 @Composable
 private fun OfflineControllerSession() {
-    NearbyPermissionsGate(
-        description = "Offline Nearby controller mode needs Bluetooth/Wi‑Fi permissions to advertise the race room. Timing is measured locally on each client.",
+    BlePermissionsGate(
+        description = "Offline BLE controller mode needs Bluetooth permissions to advertise the race room. Timing is measured locally on each client.",
     ) {
         val context = LocalContext.current
-        val nearby = remember(context) { Nearby.getConnectionsClient(context) }
         val scope = rememberCoroutineScope()
         var code by rememberSaveable { mutableStateOf("123") }
         var sessionActive by rememberSaveable { mutableStateOf(false) }
+        var statusMessage by rememberSaveable { mutableStateOf("Create a BLE room for nearby clients.") }
+        var bleHost by remember { mutableStateOf<BleRaceHost?>(null) }
         var sessionData by remember {
             mutableStateOf(
                 SessionData(
@@ -623,16 +609,14 @@ private fun OfflineControllerSession() {
             )
         }
         val clients = remember { mutableStateListOf<ClientData>() }
-        val endpoints = remember { mutableStateListOf<String>() }
         val endpointClients = remember { mutableStateMapOf<String, String>() }
 
-        fun broadcastSnapshot(targetEndpointId: String? = null) {
-            val targetIds = targetEndpointId?.let(::listOf) ?: endpoints.toList()
-            if (targetIds.isEmpty()) return
-            sendJsonPayload(
-                nearby = nearby,
-                endpointIds = targetIds,
-                json = nearbySnapshotJson(code, sessionData, clients.toList(), System.currentTimeMillis()),
+        fun updateBleSnapshot() {
+            bleHost?.updateSnapshot(
+                offlineSnapshotJson(
+                    session = sessionData,
+                    serverTimeMs = System.currentTimeMillis(),
+                ),
             )
         }
 
@@ -649,24 +633,27 @@ private fun OfflineControllerSession() {
                         micSensitivity = DEFAULT_MIC_SENSITIVITY,
                     )
                     clients.clear()
+                    endpointClients.clear()
                     sessionActive = true
+                    statusMessage = "Starting BLE advertiser..."
                 },
-                title = "Create Offline Room",
-                buttonText = "Advertise Room",
+                title = "Create BLE Room",
+                buttonText = "Advertise BLE Room",
                 accent = Amber400,
-                note = "Clients choose Offline LAN/Nearby and enter this same code.",
+                note = "Clients choose Offline BLE and enter this same code.",
             )
-            return@NearbyPermissionsGate
+            return@BlePermissionsGate
         }
 
         DisposableEffect(sessionActive, code) {
-            val payloadCallback = object : PayloadCallback() {
-                override fun onPayloadReceived(endpointId: String, payload: Payload) {
-                    val json = payload.asJsonObject() ?: return
+            val host = BleRaceHost(
+                context = context,
+                code = code,
+                onClientMessage = { endpointId, json ->
                     when (json.optString("type")) {
                         "join" -> {
-                            val clientId = json.optString("clientId").ifBlank { endpointId.take(6) }
-                            val deviceName = json.optString("deviceName").ifBlank { "Nearby Client" }
+                            val clientId = json.optString("clientId").ifBlank { endpointId.takeLast(6) }
+                            val deviceName = json.optString("deviceName").ifBlank { "BLE Client" }
                             endpointClients[endpointId] = clientId
                             clients.upsert(
                                 ClientData(
@@ -676,75 +663,54 @@ private fun OfflineControllerSession() {
                                 ),
                             )
                             playBeep(durationMs = 80)
-                            broadcastSnapshot(endpointId)
+                            updateBleSnapshot()
                         }
 
                         "finish" -> {
-                            val clientId = json.optString("clientId").ifBlank { endpointClients[endpointId] ?: endpointId.take(6) }
-                            val elapsed = json.optNullableLong("elapsedTime") ?: return
-                            clients.indexOfFirst { it.id == clientId }.takeIf { it >= 0 }?.let { index ->
-                                clients[index] = clients[index].copy(elapsedTime = elapsed)
+                            val clientId = json.optString("clientId").ifBlank { endpointClients[endpointId] ?: endpointId.takeLast(6) }
+                            val elapsed = json.optNullableLong("elapsedTime")
+                            if (elapsed != null) {
+                                clients.indexOfFirst { it.id == clientId }.takeIf { it >= 0 }?.let { index ->
+                                    clients[index] = clients[index].copy(elapsedTime = elapsed)
+                                }
+                                updateBleSnapshot()
                             }
-                            broadcastSnapshot()
                         }
                     }
-                }
-
-                override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) = Unit
-            }
-
-            val connectionCallback = object : ConnectionLifecycleCallback() {
-                override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-                    nearby.acceptConnection(endpointId, payloadCallback)
-                        .addOnFailureListener { toast(context, "Nearby accept failed: ${it.friendlyMessage()}") }
-                }
-
-                override fun onConnectionResult(endpointId: String, resolution: ConnectionResolution) {
-                    if (resolution.status.isSuccess) {
-                        if (endpointId !in endpoints) endpoints.add(endpointId)
-                        broadcastSnapshot(endpointId)
-                    } else {
-                        nearby.disconnectFromEndpoint(endpointId)
-                    }
-                }
-
-                override fun onDisconnected(endpointId: String) {
-                    endpoints.remove(endpointId)
+                },
+                onDeviceDisconnected = { endpointId ->
                     endpointClients.remove(endpointId)?.let { clientId ->
                         clients.removeAll { it.id == clientId }
                     }
-                    broadcastSnapshot()
-                }
-            }
-
-            nearby.startAdvertising(
-                "Trapwire-$code",
-                NEARBY_SERVICE_ID,
-                connectionCallback,
-                AdvertisingOptions.Builder().setStrategy(NEARBY_STRATEGY).build(),
-            ).addOnFailureListener {
-                toast(context, "Nearby advertising failed: ${it.friendlyMessage()}")
-            }
+                    updateBleSnapshot()
+                },
+                onStatus = { statusMessage = it },
+                onError = { message ->
+                    statusMessage = message
+                    toast(context, message)
+                },
+            )
+            bleHost = host
+            host.updateSnapshot(offlineSnapshotJson(sessionData, System.currentTimeMillis()))
+            host.start()
 
             onDispose {
-                nearby.stopAdvertising()
-                endpoints.toList().forEach(nearby::disconnectFromEndpoint)
-                endpoints.clear()
+                host.stop()
+                if (bleHost === host) bleHost = null
                 endpointClients.clear()
             }
         }
 
-        LaunchedEffect(sessionData, clients.toList(), endpoints.toList()) {
-            if (sessionActive) broadcastSnapshot()
+        LaunchedEffect(sessionData, sessionActive) {
+            if (sessionActive) updateBleSnapshot()
         }
-
 
         ControllerDashboard(
             code = code,
             sessionData = sessionData,
             clients = clients,
             serverOffset = 0L,
-            syncLabel = "Client monotonic timing",
+            syncLabel = statusMessage,
             onSensitivityChange = { sensitivity ->
                 sessionData = sessionData.copy(sensitivity = sensitivity)
             },
@@ -771,14 +737,13 @@ private fun OfflineControllerSession() {
     }
 }
 
+
 @Composable
 private fun OfflineClientSession(cameraExecutor: ExecutorService) {
-    NearbyPermissionsGate(
-        description = "Offline Nearby client mode needs Bluetooth/Wi‑Fi permissions to discover the controller. Timing is measured locally on this device.",
+    BlePermissionsGate(
+        description = "Offline BLE client mode needs Bluetooth permissions to discover the controller. Timing is measured locally on this device.",
     ) {
         val context = LocalContext.current
-        val nearby = remember(context) { Nearby.getConnectionsClient(context) }
-        val scope = rememberCoroutineScope()
         val clientId = rememberSaveable { randomClientId() }
         val motionState = remember { MotionDetectionState() }
 
@@ -786,8 +751,8 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
         var deviceName by rememberSaveable { mutableStateOf("Client ${(10..99).random()}") }
         var discovering by rememberSaveable { mutableStateOf(false) }
         var joined by rememberSaveable { mutableStateOf(false) }
-        var statusMessage by rememberSaveable { mutableStateOf("Enter the controller code, then search nearby.") }
-        var connectedEndpointId by remember { mutableStateOf<String?>(null) }
+        var statusMessage by rememberSaveable { mutableStateOf("Enter the controller code, then search BLE.") }
+        var bleClient by remember { mutableStateOf<BleRaceClient?>(null) }
         var sessionData by remember { mutableStateOf<SessionData?>(null) }
         var triggered by rememberSaveable { mutableStateOf(false) }
         var finalTime by rememberSaveable { mutableStateOf<Long?>(null) }
@@ -799,97 +764,19 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
         var cameraActive by rememberSaveable { mutableStateOf(false) }
         var activeCamera by remember { mutableStateOf<Camera?>(null) }
 
+        fun disconnectBle() {
+            bleClient?.close()
+            bleClient = null
+        }
+
         SideEffect {
             motionState.session = sessionData
             motionState.triggered = triggered
             motionState.localStartTime = soundStartTime
         }
 
-        DisposableEffect(connectedEndpointId) {
-            val endpointId = connectedEndpointId
-            onDispose {
-                endpointId?.let(nearby::disconnectFromEndpoint)
-            }
-        }
-
-        DisposableEffect(discovering, code, clientId, deviceName) {
-            if (!discovering) return@DisposableEffect onDispose { }
-
-            val payloadCallback = object : PayloadCallback() {
-                override fun onPayloadReceived(endpointId: String, payload: Payload) {
-                    val snapshot = payload.asJsonObject()?.toOfflineSessionSnapshot() ?: return
-                    sessionData = snapshot.session
-                }
-
-                override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) = Unit
-            }
-
-            val connectionCallback = object : ConnectionLifecycleCallback() {
-                override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-                    statusMessage = "Accepting Nearby connection..."
-                    nearby.acceptConnection(endpointId, payloadCallback)
-                        .addOnFailureListener {
-                            statusMessage = "Nearby accept failed: ${it.friendlyMessage()}"
-                        }
-                }
-
-                override fun onConnectionResult(endpointId: String, resolution: ConnectionResolution) {
-                    if (resolution.status.isSuccess) {
-                        connectedEndpointId = endpointId
-                        joined = true
-                        discovering = false
-                        statusMessage = "Connected to offline controller."
-                        nearby.stopDiscovery()
-                        sendJsonPayload(
-                            nearby = nearby,
-                            endpointId = endpointId,
-                            json = nearbyJoinJson(clientId, deviceName.trim()),
-                        )
-                    } else {
-                        statusMessage = "Nearby connection failed. Try searching again."
-                        nearby.disconnectFromEndpoint(endpointId)
-                    }
-                }
-
-                override fun onDisconnected(endpointId: String) {
-                    if (connectedEndpointId == endpointId) {
-                        connectedEndpointId = null
-                        joined = false
-                        sessionData = null
-                        discovering = false
-                        statusMessage = "Controller disconnected. Search again to rejoin."
-                    }
-                }
-            }
-
-            val discoveryCallback = object : EndpointDiscoveryCallback() {
-                override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-                    if (info.endpointName != "Trapwire-$code") return
-                    statusMessage = "Found controller. Connecting..."
-                    nearby.stopDiscovery()
-                    nearby.requestConnection(deviceName.trim(), endpointId, connectionCallback)
-                        .addOnFailureListener {
-                            statusMessage = "Nearby request failed: ${it.friendlyMessage()}"
-                            discovering = false
-                        }
-                }
-
-                override fun onEndpointLost(endpointId: String) = Unit
-            }
-
-            statusMessage = "Searching for Trapwire-$code nearby..."
-            nearby.startDiscovery(
-                NEARBY_SERVICE_ID,
-                discoveryCallback,
-                DiscoveryOptions.Builder().setStrategy(NEARBY_STRATEGY).build(),
-            ).addOnFailureListener {
-                statusMessage = "Nearby discovery failed: ${it.friendlyMessage()}"
-                discovering = false
-            }
-
-            onDispose {
-                nearby.stopDiscovery()
-            }
+        DisposableEffect(Unit) {
+            onDispose { disconnectBle() }
         }
 
         if (!joined) {
@@ -902,14 +789,46 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
                 onDeviceNameChange = { deviceName = it },
                 onJoin = {
                     playBeep(durationMs = 80)
+                    disconnectBle()
                     discovering = true
+                    statusMessage = "Searching for BLE room Trapwire-$code..."
+                    val client = BleRaceClient(
+                        context = context,
+                        code = code,
+                        joinJson = offlineJoinJson(clientId, deviceName.trim()),
+                        onSnapshot = { snapshot ->
+                            val parsed = snapshot.toOfflineSessionSnapshot() ?: return@BleRaceClient
+                            sessionData = parsed.session
+                        },
+                        onConnected = {
+                            joined = true
+                            discovering = false
+                            statusMessage = "Connected to BLE controller."
+                        },
+                        onDisconnected = {
+                            joined = false
+                            discovering = false
+                            sessionData = null
+                            statusMessage = "Controller disconnected. Search again to rejoin."
+                            bleClient = null
+                        },
+                        onStatus = { statusMessage = it },
+                        onError = { message ->
+                            statusMessage = message
+                            discovering = false
+                            toast(context, message)
+                        },
+                    )
+                    bleClient = client
+                    client.start()
                 },
                 onCancel = {
+                    disconnectBle()
                     discovering = false
                     statusMessage = "Search cancelled."
                 },
             )
-            return@NearbyPermissionsGate
+            return@BlePermissionsGate
         }
 
         LaunchedEffect(sessionData?.status) {
@@ -984,18 +903,12 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
                         cameraActive = false
                     },
                     onElapsedDetected = { elapsed ->
-                        val endpointId = connectedEndpointId
-                        if (!triggered && endpointId != null) {
+                        val client = bleClient
+                        if (!triggered && client != null) {
                             triggered = true
                             finalTime = elapsed
                             motionState.triggered = true
-                            scope.launch {
-                                sendJsonPayload(
-                                    nearby = nearby,
-                                    endpointId = endpointId,
-                                    json = nearbyFinishJson(clientId, elapsed),
-                                )
-                            }
+                            client.sendJson(offlineFinishJson(clientId, elapsed))
                         }
                     },
                 )
@@ -1003,6 +916,7 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
         )
     }
 }
+
 
 @Composable
 private fun CreateSessionScreen(
@@ -1206,7 +1120,7 @@ private fun ControllerDashboard(
             }
         }
 
-        TinyText(syncLabel + ": " + serverOffset + "ms")
+        TinyText(if (serverOffset == 0L && syncLabel != "Server sync offset") syncLabel else syncLabel + ": " + serverOffset + "ms")
     }
 }
 
@@ -1497,7 +1411,7 @@ private fun OfflineJoinRaceScreen(
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
                 Text("⌂", color = Amber400, fontSize = 48.sp, fontWeight = FontWeight.Bold)
-                Text("Join Nearby", color = Neutral100, fontSize = 25.sp, fontWeight = FontWeight.SemiBold)
+                Text("Join BLE", color = Neutral100, fontSize = 25.sp, fontWeight = FontWeight.SemiBold)
 
                 OutlinedTextField(
                     value = deviceName,
@@ -2614,18 +2528,18 @@ private fun TinyText(text: String) {
 }
 
 @Composable
-private fun NearbyPermissionsGate(
+private fun BlePermissionsGate(
     description: String,
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
-    val permissions = remember { requiredNearbyPermissions() }
+    val permissions = remember { requiredBlePermissions() }
     var granted by remember {
         mutableStateOf(permissions.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED })
     }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         granted = permissions.all { result[it] == true || ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
-        if (!granted) toast(context, "Nearby permissions are required for offline mode.")
+        if (!granted) toast(context, "BLE permissions are required for offline mode.")
     }
 
     LaunchedEffect(Unit) {
@@ -2642,12 +2556,12 @@ private fun NearbyPermissionsGate(
             contentAlignment = Alignment.Center,
         ) {
             SectionCard {
-                Text("Nearby permission needed", color = Neutral100, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                Text("BLE permission needed", color = Neutral100, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
                 Text(description, color = Neutral500, fontSize = 14.sp)
                 Spacer(Modifier.height(16.dp))
                 Button(onClick = { launcher.launch(permissions) }, shape = RoundedCornerShape(14.dp)) {
-                    Text("Grant Nearby Access")
+                    Text("Grant BLE Access")
                 }
             }
         }
@@ -2655,49 +2569,25 @@ private fun NearbyPermissionsGate(
 }
 
 
-private fun sendJsonPayload(nearby: ConnectionsClient, endpointId: String, json: JSONObject) {
-    sendJsonPayload(nearby, listOf(endpointId), json)
-}
-
-private fun sendJsonPayload(nearby: ConnectionsClient, endpointIds: Collection<String>, json: JSONObject) {
-    if (endpointIds.isEmpty()) return
-    val payload = Payload.fromBytes(json.toString().toByteArray(StandardCharsets.UTF_8))
-    nearby.sendPayload(endpointIds.toList(), payload)
-}
-
-private fun Payload.asJsonObject(): JSONObject? {
-    if (type != Payload.Type.BYTES) return null
-    val bytes = asBytes() ?: return null
-    return runCatching { JSONObject(String(bytes, StandardCharsets.UTF_8)) }.getOrNull()
-}
-
-private fun nearbyJoinJson(clientId: String, deviceName: String): JSONObject {
+private fun offlineJoinJson(clientId: String, deviceName: String): JSONObject {
     return JSONObject()
         .put("type", "join")
         .put("clientId", clientId)
-        .put("deviceName", deviceName.ifBlank { "Nearby Client" })
+        .put("deviceName", deviceName.ifBlank { "BLE Client" })
 }
 
-private fun nearbyFinishJson(clientId: String, elapsedTime: Long): JSONObject {
+private fun offlineFinishJson(clientId: String, elapsedTime: Long): JSONObject {
     return JSONObject()
         .put("type", "finish")
         .put("clientId", clientId)
         .put("elapsedTime", elapsedTime)
 }
 
-private fun nearbySnapshotJson(code: String, session: SessionData, clients: List<ClientData>, gpsTimeMs: Long): JSONObject {
+private fun offlineSnapshotJson(session: SessionData, serverTimeMs: Long): JSONObject {
     return JSONObject()
         .put("type", "snapshot")
-        .put("code", code)
-        .put("timeDomain", "gps")
-        .put("serverTime", gpsTimeMs)
+        .put("serverTime", serverTimeMs)
         .put("session", session.toJson())
-        .put(
-            "clients",
-            JSONArray().also { array ->
-                clients.forEach { array.put(it.toJson()) }
-            },
-        )
 }
 
 private fun SessionData.toJson(): JSONObject {
