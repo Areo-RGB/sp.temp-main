@@ -19,3 +19,4 @@ tmp-latest-debug-install/
 .serena/
 .agentbridge/conversation.db
 .agentbridge/conversation.db-*
+/.agentbridge/

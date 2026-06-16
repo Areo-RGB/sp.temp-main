@@ -123,10 +123,10 @@ private const val DEFAULT_MIC_SENSITIVITY = 70
 private const val START_BEEP_SAMPLE_RATE = 44_100
 private const val START_BEEP_FRAME_MS = 10
 private const val STARTER_ARM_TO_BEEP_DELAY_MS = 2_000L
-private const val START_BEEP_PATTERN_SCORE = 0.58f
-private const val START_BEEP_FREQUENCY_TOLERANCE = 0.45f
-private const val START_SHOT_PATTERN_MAX_MS = 240L
-private const val START_SHOT_PATTERN_MATCH_GRACE_MS = 350L
+private const val START_BEEP_PATTERN_SCORE = 0.52f
+private const val START_BEEP_FREQUENCY_TOLERANCE = 0.70f
+private const val START_SHOT_PATTERN_MAX_MS = 1_100L
+private const val START_SHOT_PATTERN_MATCH_GRACE_MS = 1_350L
 
 private val Neutral950 = Color(0xFF0A0A0A)
 private val Neutral900 = Color(0xFF171717)
