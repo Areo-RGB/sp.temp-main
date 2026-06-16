@@ -99,15 +99,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import com.google.firebase.FirebaseApp
-import com.google.firebase.FirebaseOptions
-import com.google.firebase.database.DataSnapshot
-import com.google.firebase.database.DatabaseError
-import com.google.firebase.database.FirebaseDatabase
-import com.google.firebase.database.ValueEventListener
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import org.json.JSONArray
 import org.json.JSONObject
 import java.nio.charset.StandardCharsets
@@ -117,7 +110,6 @@ import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
-private const val DATABASE_URL = "https://realtime-db-b2264-default-rtdb.europe-west1.firebasedatabase.app"
 private const val DEFAULT_SENSITIVITY = 70
 private const val DEFAULT_MIC_SENSITIVITY = 70
 private const val START_BEEP_SAMPLE_RATE = 44_100
@@ -149,7 +141,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        ensureFirebaseReady()
         cameraExecutor = Executors.newSingleThreadExecutor()
 
         setContent {
@@ -162,20 +153,6 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         cameraExecutor.shutdown()
         super.onDestroy()
-    }
-
-    private fun ensureFirebaseReady() {
-        if (FirebaseApp.getApps(this).isNotEmpty()) return
-
-        val options = FirebaseOptions.Builder()
-            .setApiKey("AIzaSyDPoogZrY20wvrN8ejssfAbHvpCzAIm57Y")
-            .setApplicationId("1:80707107460:web:b102f2a3937c5d9e3f20d1")
-            .setDatabaseUrl(DATABASE_URL)
-            .setProjectId("realtime-db-b2264")
-            .setStorageBucket("realtime-db-b2264.firebasestorage.app")
-            .build()
-
-        FirebaseApp.initializeApp(this, options)
     }
 }
 
@@ -218,7 +195,8 @@ private const val TRAPWIRE_BACKGROUND_NEW_WEIGHT = 1f - TRAPWIRE_BACKGROUND_KEEP
 private fun monotonicNowNanos(): Long = SystemClock.elapsedRealtimeNanos()
 private fun monotonicNowMs(): Long = monotonicNowNanos() / NANOS_PER_MILLISECOND
 private fun nanosToMillis(nanos: Long): Long = nanos / NANOS_PER_MILLISECOND
-private fun elapsedMillisBetween(startNanos: Long, endNanos: Long): Long = nanosToMillis(endNanos - startNanos)
+private fun elapsedMillisBetween(startNanos: Long, endNanos: Long): Long =
+    nanosToMillis(endNanos - startNanos)
 
 private class MotionDetectionState {
     @Volatile
@@ -272,67 +250,23 @@ private fun TrapwireTheme(content: @Composable () -> Unit) {
 
 @Composable
 private fun TrapwireApp(cameraExecutor: ExecutorService) {
-    val database = remember { FirebaseDatabase.getInstance(DATABASE_URL) }
-    val serverOffset by rememberServerOffset(database)
     var screen by rememberSaveable { mutableStateOf("select") }
 
     BackHandler(screen != "select") {
-        screen = when (screen) {
-            "controllerFirebase", "controllerOffline" -> "controllerMode"
-            "clientFirebase", "clientOffline" -> "clientMode"
-            "controllerMode", "clientMode" -> "select"
-            else -> "select"
-        }
+        screen = "select"
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = Neutral950) {
         when (screen) {
-            "controllerMode" -> BackendSelectionScreen(
-                title = "Controller Sync",
-                subtitle = "Choose how racers will connect to this room.",
-                onFirebaseSelected = { screen = "controllerFirebase" },
-                onOfflineSelected = { screen = "controllerOffline" },
-            )
-
-            "clientMode" -> BackendSelectionScreen(
-                title = "Client Sync",
-                subtitle = "Offline BLE is the only client sync mode.",
-                onFirebaseSelected = { screen = "clientFirebase" },
-                onOfflineSelected = { screen = "clientOffline" },
-            )
-
-            "controllerFirebase" -> ControllerSession(database, serverOffset)
-            "controllerOffline" -> OfflineControllerSession()
-            "clientFirebase" -> ClientSession(database, serverOffset, cameraExecutor)
-            "clientOffline" -> OfflineClientSession(cameraExecutor)
+            "controller" -> OfflineControllerSession()
+            "client" -> OfflineClientSession(cameraExecutor)
             else -> RoleSelectionScreen(
                 onRoleSelected = { role ->
-                    screen = if (role == "controller") "controllerMode" else "clientMode"
+                    screen = if (role == "controller") "controller" else "client"
                 },
             )
         }
     }
-}
-
-@Composable
-private fun rememberServerOffset(database: FirebaseDatabase): androidx.compose.runtime.State<Long> {
-    val offset = remember { mutableLongStateOf(0L) }
-
-    DisposableEffect(database) {
-        val offsetRef = database.getReference(".info/serverTimeOffset")
-        val listener = object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                offset.longValue = snapshot.getValue(Long::class.java) ?: 0L
-            }
-
-            override fun onCancelled(error: DatabaseError) = Unit
-        }
-
-        offsetRef.addValueEventListener(listener)
-        onDispose { offsetRef.removeEventListener(listener) }
-    }
-
-    return offset
 }
 
 @Composable
@@ -341,10 +275,12 @@ private fun RoleSelectionScreen(onRoleSelected: (String) -> Unit) {
         modifier = Modifier
             .fillMaxSize()
             .padding(24.dp),
-        contentAlignment = Alignment.Center,
     ) {
         Column(
-            modifier = Modifier.widthIn(max = 420.dp),
+            modifier = Modifier
+                .widthIn(max = 420.dp)
+                .align(Alignment.Center)
+                .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
@@ -359,7 +295,12 @@ private fun RoleSelectionScreen(onRoleSelected: (String) -> Unit) {
                 Text("◎", color = Neutral100, fontSize = 36.sp, fontWeight = FontWeight.Bold)
             }
 
-            Text("Trapwire Racing", fontSize = 32.sp, fontWeight = FontWeight.SemiBold, color = Neutral100)
+            Text(
+                "Trapwire Racing",
+                fontSize = 32.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Neutral100
+            )
             Text("Virtual motion detection finish line", color = Neutral500, fontSize = 15.sp)
 
             DebugUpdateCard()
@@ -381,43 +322,6 @@ private fun RoleSelectionScreen(onRoleSelected: (String) -> Unit) {
                 tint = Green500,
                 onClick = { onRoleSelected("client") },
             )
-        }
-    }
-}
-
-@Composable
-private fun BackendSelectionScreen(
-    title: String,
-    subtitle: String,
-    onFirebaseSelected: () -> Unit,
-    onOfflineSelected: () -> Unit,
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            modifier = Modifier.widthIn(max = 440.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(18.dp),
-        ) {
-            Text(title, color = Neutral100, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
-            Text(subtitle, color = Neutral500, fontSize = 15.sp, textAlign = TextAlign.Center)
-
-            Spacer(Modifier.height(8.dp))
-
-
-            RoleButton(
-                title = "Offline BLE",
-                subtitle = "BLE device-to-device, no Firebase",
-                symbol = "⌂",
-                tint = Amber400,
-                onClick = onOfflineSelected,
-            )
-
-            TinyText("BLE mode works phone-to-phone; keep devices close during join and race setup.")
         }
     }
 }
@@ -460,136 +364,14 @@ private fun RoleButton(
 }
 
 @Composable
-private fun ControllerSession(database: FirebaseDatabase, serverOffset: Long) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var code by rememberSaveable { mutableStateOf("123") }
-    var sessionActive by rememberSaveable { mutableStateOf(false) }
-    var sessionData by remember { mutableStateOf<SessionData?>(null) }
-    val clients = remember { mutableStateListOf<ClientData>() }
-
-    if (!sessionActive) {
-        CreateSessionScreen(
-            code = code,
-            onCodeChange = { code = it.onlyDigits3() },
-            onCreate = {
-                scope.launch {
-                    runCatching {
-                        playBeep(durationMs = 80)
-                        val sessionRef = database.getReference("sessions/$code")
-                        sessionRef.setValue(
-                            mapOf(
-                                "status" to "waiting",
-                                "createdAt" to System.currentTimeMillis(),
-                                "sensitivity" to DEFAULT_SENSITIVITY,
-                                "micSensitivity" to DEFAULT_MIC_SENSITIVITY,
-                            ),
-                        ).await()
-                        sessionRef.onDisconnect().removeValue()
-                    }.onSuccess {
-                        sessionActive = true
-                    }.onFailure {
-                        toast(context, "Failed to create session: ${it.friendlyMessage()}")
-                    }
-                }
-            },
-        )
-        return
-    }
-
-    DisposableEffect(sessionActive, code) {
-        val sessionRef = database.getReference("sessions/$code")
-        val clientsRef = database.getReference("sessions/$code/clients")
-
-        val sessionListener = object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                sessionData = snapshot.toSessionData()
-            }
-
-            override fun onCancelled(error: DatabaseError) {
-                toast(context, "Session listener failed: ${error.message}")
-            }
-        }
-
-        val clientsListener = object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                clients.clear()
-                snapshot.children
-                    .mapNotNull { it.toClientData() }
-                    .sortedBy { it.joinedAt }
-                    .forEach { clients.add(it) }
-            }
-
-            override fun onCancelled(error: DatabaseError) {
-                toast(context, "Client listener failed: ${error.message}")
-            }
-        }
-
-        sessionRef.addValueEventListener(sessionListener)
-        clientsRef.addValueEventListener(clientsListener)
-
-        onDispose {
-            sessionRef.removeEventListener(sessionListener)
-            clientsRef.removeEventListener(clientsListener)
-        }
-    }
-
-    ControllerDashboard(
-        code = code,
-        sessionData = sessionData,
-        clients = clients,
-        serverOffset = serverOffset,
-        onSensitivityChange = { sensitivity ->
-            scope.launch {
-                database.getReference("sessions/$code/sensitivity").setValue(sensitivity).awaitSafely(context)
-            }
-        },
-        onMicSensitivityChange = { sensitivity ->
-            scope.launch {
-                database.getReference("sessions/$code/micSensitivity").setValue(sensitivity).awaitSafely(context)
-            }
-        },
-        onStartRace = {
-            scope.launch {
-                database.getReference("sessions/$code").updateChildren(
-                    mapOf(
-                        "status" to "running",
-                        "startTime" to null,
-                    ),
-                ).awaitSafely(context)
-                delay(STARTER_ARM_TO_BEEP_DELAY_MS)
-                val statusAfterArm = database.getReference("sessions/$code/status").get().await()
-                    .getValue(String::class.java)
-                if (statusAfterArm == "running") {
-                    playStarterBeep(context)
-                }
-            }
-        },
-        onResetRace = {
-            scope.launch {
-                val updates = mutableMapOf<String, Any?>(
-                    "sessions/$code/status" to "waiting",
-                    "sessions/$code/startTime" to null,
-                )
-                clients.forEach { client ->
-                    updates["sessions/$code/clients/${client.id}/elapsedTime"] = null
-                }
-                database.reference.updateChildren(updates).awaitSafely(context)
-            }
-        },
-    )
-}
-
-@Composable
 private fun OfflineControllerSession() {
     BlePermissionsGate(
         description = "Offline BLE controller mode needs Bluetooth permissions to advertise the race room. Timing is measured locally on each client.",
     ) {
         val context = LocalContext.current
         val scope = rememberCoroutineScope()
-        var code by rememberSaveable { mutableStateOf("123") }
-        var sessionActive by rememberSaveable { mutableStateOf(false) }
-        var statusMessage by rememberSaveable { mutableStateOf("Create a BLE room for nearby clients.") }
+        val code = rememberSaveable { mutableStateOf((100..999).random().toString()) }
+        var statusMessage by rememberSaveable { mutableStateOf("Starting BLE advertiser...") }
         var bleHost by remember { mutableStateOf<BleRaceHost?>(null) }
         var sessionData by remember {
             mutableStateOf(
@@ -613,39 +395,15 @@ private fun OfflineControllerSession() {
             )
         }
 
-        if (!sessionActive) {
-            CreateSessionScreen(
-                code = code,
-                onCodeChange = { code = it.onlyDigits3() },
-                onCreate = {
-                    playBeep(durationMs = 80)
-                    sessionData = SessionData(
-                        status = "waiting",
-                        createdAt = System.currentTimeMillis(),
-                        sensitivity = DEFAULT_SENSITIVITY,
-                        micSensitivity = DEFAULT_MIC_SENSITIVITY,
-                    )
-                    clients.clear()
-                    endpointClients.clear()
-                    sessionActive = true
-                    statusMessage = "Starting BLE advertiser..."
-                },
-                title = "Create BLE Room",
-                buttonText = "Advertise BLE Room",
-                accent = Amber400,
-                note = "Clients choose Offline BLE and enter this same code.",
-            )
-            return@BlePermissionsGate
-        }
-
-        DisposableEffect(sessionActive, code) {
+        DisposableEffect(code.value) {
             val host = BleRaceHost(
                 context = context,
-                code = code,
+                code = code.value,
                 onClientMessage = { endpointId, json ->
                     when (json.optString("type")) {
                         "join" -> {
-                            val clientId = json.optString("clientId").ifBlank { endpointId.takeLast(6) }
+                            val clientId =
+                                json.optString("clientId").ifBlank { endpointId.takeLast(6) }
                             val deviceName = json.optString("deviceName").ifBlank { "BLE Client" }
                             endpointClients[endpointId] = clientId
                             clients.upsert(
@@ -660,12 +418,14 @@ private fun OfflineControllerSession() {
                         }
 
                         "finish" -> {
-                            val clientId = json.optString("clientId").ifBlank { endpointClients[endpointId] ?: endpointId.takeLast(6) }
+                            val clientId = json.optString("clientId")
+                                .ifBlank { endpointClients[endpointId] ?: endpointId.takeLast(6) }
                             val elapsed = json.optNullableLong("elapsedTime")
                             if (elapsed != null) {
-                                clients.indexOfFirst { it.id == clientId }.takeIf { it >= 0 }?.let { index ->
-                                    clients[index] = clients[index].copy(elapsedTime = elapsed)
-                                }
+                                clients.indexOfFirst { it.id == clientId }.takeIf { it >= 0 }
+                                    ?.let { index ->
+                                        clients[index] = clients[index].copy(elapsedTime = elapsed)
+                                    }
                                 updateBleSnapshot()
                             }
                         }
@@ -694,12 +454,12 @@ private fun OfflineControllerSession() {
             }
         }
 
-        LaunchedEffect(sessionData, sessionActive) {
-            if (sessionActive) updateBleSnapshot()
+        LaunchedEffect(sessionData) {
+            updateBleSnapshot()
         }
 
         ControllerDashboard(
-            code = code,
+            code = code.value,
             sessionData = sessionData,
             clients = clients,
             serverOffset = 0L,
@@ -742,9 +502,9 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
 
         var code by rememberSaveable { mutableStateOf("123") }
         var deviceName by rememberSaveable { mutableStateOf("Client ${(10..99).random()}") }
+        var connected by rememberSaveable { mutableStateOf(false) }
         var discovering by rememberSaveable { mutableStateOf(false) }
-        var joined by rememberSaveable { mutableStateOf(false) }
-        var statusMessage by rememberSaveable { mutableStateOf("Enter the controller code, then search BLE.") }
+        var statusMessage by rememberSaveable { mutableStateOf("") }
         var bleClient by remember { mutableStateOf<BleRaceClient?>(null) }
         var sessionData by remember { mutableStateOf<SessionData?>(null) }
         var triggered by rememberSaveable { mutableStateOf(false) }
@@ -760,6 +520,44 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
         fun disconnectBle() {
             bleClient?.close()
             bleClient = null
+            connected = false
+            discovering = false
+            sessionData = null
+        }
+
+        fun connectBle() {
+            disconnectBle()
+            discovering = true
+            statusMessage = "Searching for BLE room Trapwire-$code..."
+            val client = BleRaceClient(
+                context = context,
+                code = code,
+                joinJson = offlineJoinJson(clientId, deviceName.trim()),
+                onSnapshot = { snapshot ->
+                    val parsed = snapshot.toOfflineSessionSnapshot() ?: return@BleRaceClient
+                    sessionData = parsed.session
+                },
+                onConnected = {
+                    connected = true
+                    discovering = false
+                    statusMessage = ""
+                },
+                onDisconnected = {
+                    connected = false
+                    discovering = false
+                    sessionData = null
+                    statusMessage = "Controller disconnected."
+                    bleClient = null
+                },
+                onStatus = { statusMessage = it },
+                onError = { message ->
+                    statusMessage = message
+                    discovering = false
+                    toast(context, message)
+                },
+            )
+            bleClient = client
+            client.start()
         }
 
         SideEffect {
@@ -770,58 +568,6 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
 
         DisposableEffect(Unit) {
             onDispose { disconnectBle() }
-        }
-
-        if (!joined) {
-            OfflineJoinRaceScreen(
-                code = code,
-                deviceName = deviceName,
-                searching = discovering,
-                statusMessage = statusMessage,
-                onCodeChange = { code = it.onlyDigits3() },
-                onDeviceNameChange = { deviceName = it },
-                onJoin = {
-                    playBeep(durationMs = 80)
-                    disconnectBle()
-                    discovering = true
-                    statusMessage = "Searching for BLE room Trapwire-$code..."
-                    val client = BleRaceClient(
-                        context = context,
-                        code = code,
-                        joinJson = offlineJoinJson(clientId, deviceName.trim()),
-                        onSnapshot = { snapshot ->
-                            val parsed = snapshot.toOfflineSessionSnapshot() ?: return@BleRaceClient
-                            sessionData = parsed.session
-                        },
-                        onConnected = {
-                            joined = true
-                            discovering = false
-                            statusMessage = "Connected to BLE controller."
-                        },
-                        onDisconnected = {
-                            joined = false
-                            discovering = false
-                            sessionData = null
-                            statusMessage = "Controller disconnected. Search again to rejoin."
-                            bleClient = null
-                        },
-                        onStatus = { statusMessage = it },
-                        onError = { message ->
-                            statusMessage = message
-                            discovering = false
-                            toast(context, message)
-                        },
-                    )
-                    bleClient = client
-                    client.start()
-                },
-                onCancel = {
-                    disconnectBle()
-                    discovering = false
-                    statusMessage = "Search cancelled."
-                },
-            )
-            return@BlePermissionsGate
         }
 
         LaunchedEffect(sessionData?.status) {
@@ -855,7 +601,10 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
             while (sessionData?.status == "running" && !triggered) {
                 val startTime = soundStartTime
                 val now = monotonicNowNanos()
-                localTimer = if (startTime != null && now >= startTime) elapsedMillisBetween(startTime, now) else 0L
+                localTimer = if (startTime != null && now >= startTime) elapsedMillisBetween(
+                    startTime,
+                    now
+                ) else 0L
                 delay(33L)
             }
             if (sessionData?.status != "running") {
@@ -863,100 +612,121 @@ private fun OfflineClientSession(cameraExecutor: ExecutorService) {
             }
         }
 
-        ClientDashboard(
-            code = code,
-            sessionData = sessionData,
-            localTimer = localTimer,
-            timerStarted = soundStartTime != null,
-            micLevel = micLevel,
-            triggered = triggered,
-            finalTime = finalTime,
-            cameraActive = cameraActive,
-            aeLocked = aeLocked,
-            previewEnabled = previewEnabled,
-            onPreviewToggle = { previewEnabled = !previewEnabled },
-            onAeLockToggle = {
-                val nextLocked = !aeLocked
-                aeLocked = nextLocked
-                setAeAwbLock(activeCamera, nextLocked)
-            },
-            cameraContent = {
-                CameraTrapwireView(
-                    motionState = motionState,
-                    cameraExecutor = cameraExecutor,
-                    aeLocked = aeLocked,
-                    previewEnabled = previewEnabled,
-                    onCameraReady = { camera ->
-                        activeCamera = camera
-                        cameraActive = true
-                        if (aeLocked) setAeAwbLock(camera, true)
-                    },
-                    onCameraStopped = {
-                        activeCamera = null
-                        cameraActive = false
-                    },
-                    onElapsedDetected = { elapsed ->
-                        val client = bleClient
-                        if (!triggered && client != null) {
-                            triggered = true
-                            finalTime = elapsed
-                            motionState.triggered = true
-                            client.sendJson(offlineFinishJson(clientId, elapsed))
-                        }
-                    },
-                )
-            },
-        )
-    }
-}
-
-
-@Composable
-private fun CreateSessionScreen(
-    code: String,
-    onCodeChange: (String) -> Unit,
-    onCreate: () -> Unit,
-    title: String = "Create Session",
-    buttonText: String = "Open Room",
-    accent: Color = Blue500,
-    note: String? = null,
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Card(
-            modifier = Modifier.widthIn(max = 380.dp),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = Neutral900),
-            border = BorderStroke(1.dp, Neutral800),
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(18.dp),
-            ) {
-                Text("▣", color = accent, fontSize = 48.sp, fontWeight = FontWeight.Bold)
-                Text(title, color = Neutral100, fontSize = 25.sp, fontWeight = FontWeight.SemiBold)
-                CodeField(label = "Enter 3-Digit Code", code = code, onCodeChange = onCodeChange, accent = accent)
-                note?.let { TinyText(it) }
-                Button(
-                    onClick = onCreate,
-                    enabled = code.length == 3,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = if (accent == Amber400) Amber400 else Blue600),
-                    shape = RoundedCornerShape(16.dp),
+            if (!connected) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = Neutral900),
+                    border = BorderStroke(1.dp, Neutral800),
                 ) {
-                    Text(buttonText, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = if (accent == Amber400) Color.Black else Color.White)
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text(
+                            "Connect to Controller",
+                            color = Neutral100,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        OutlinedTextField(
+                            value = deviceName,
+                            onValueChange = { deviceName = it },
+                            label = { Text("Device Name") },
+                            singleLine = true,
+                            enabled = !discovering,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                        )
+                        CodeField(
+                            label = "3-Digit Code",
+                            code = code,
+                            onCodeChange = { code = it.onlyDigits3() },
+                            accent = Amber400,
+                        )
+                        if (statusMessage.isNotBlank()) {
+                            Text(
+                                statusMessage,
+                                color = Neutral500,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                        Button(
+                            onClick = if (discovering) ::disconnectBle else ::connectBle,
+                            enabled = code.length == 3 && deviceName.isNotBlank(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (discovering) Neutral800 else Amber400),
+                            shape = RoundedCornerShape(14.dp),
+                        ) {
+                            Text(
+                                if (discovering) "Stop" else "Find Controller",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (discovering) Neutral100 else Color.Black,
+                            )
+                        }
+                    }
                 }
             }
+
+            ClientDashboard(
+                code = code,
+                sessionData = sessionData,
+                localTimer = localTimer,
+                timerStarted = soundStartTime != null,
+                micLevel = micLevel,
+                triggered = triggered,
+                finalTime = finalTime,
+                cameraActive = cameraActive,
+                aeLocked = aeLocked,
+                previewEnabled = previewEnabled,
+                onPreviewToggle = { previewEnabled = !previewEnabled },
+                onAeLockToggle = {
+                    val nextLocked = !aeLocked
+                    aeLocked = nextLocked
+                    setAeAwbLock(activeCamera, nextLocked)
+                },
+                cameraContent = {
+                    CameraTrapwireView(
+                        motionState = motionState,
+                        cameraExecutor = cameraExecutor,
+                        aeLocked = aeLocked,
+                        previewEnabled = previewEnabled,
+                        onCameraReady = { camera ->
+                            activeCamera = camera
+                            cameraActive = true
+                            if (aeLocked) setAeAwbLock(camera, true)
+                        },
+                        onCameraStopped = {
+                            activeCamera = null
+                            cameraActive = false
+                        },
+                        onElapsedDetected = { elapsed ->
+                            val client = bleClient
+                            if (!triggered && client != null) {
+                                triggered = true
+                                finalTime = elapsed
+                                motionState.triggered = true
+                                client.sendJson(offlineFinishJson(clientId, elapsed))
+                            }
+                        },
+                    )
+                },
+            )
         }
     }
 }
+
 
 @Composable
 private fun ControllerDashboard(
@@ -992,19 +762,30 @@ private fun ControllerDashboard(
         ) {
             Column {
                 Label("SESSION CODE")
-                Text(code, color = Neutral100, fontSize = 38.sp, fontFamily = FontFamily.Monospace, letterSpacing = 5.sp)
+                Text(
+                    code,
+                    color = Neutral100,
+                    fontSize = 38.sp,
+                    fontFamily = FontFamily.Monospace,
+                    letterSpacing = 5.sp
+                )
             }
             Column(horizontalAlignment = Alignment.End) {
                 Label("STATUS")
                 StatusChip(
-                    text = if (sessionData?.status == "running") "ARMED" else sessionData?.status?.uppercase(Locale.US) ?: "WAITING",
+                    text = if (sessionData?.status == "running") "ARMED" else sessionData?.status?.uppercase(
+                        Locale.US
+                    ) ?: "WAITING",
                     color = if (sessionData?.status == "running") Green400 else Amber400,
                 )
             }
         }
 
         SectionCard {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Label("CLIENT MOTION SENSITIVITY")
                     Text(
@@ -1014,7 +795,13 @@ private fun ControllerDashboard(
                         lineHeight = 16.sp,
                     )
                 }
-                Text("$sensitivity%", color = Blue500, fontSize = 26.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                Text(
+                    "$sensitivity%",
+                    color = Blue500,
+                    fontSize = 26.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
             }
             Spacer(Modifier.height(12.dp))
             Slider(
@@ -1031,7 +818,10 @@ private fun ControllerDashboard(
         }
 
         SectionCard {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Label("MICROPHONE START SENSITIVITY")
                     Text(
@@ -1041,7 +831,13 @@ private fun ControllerDashboard(
                         lineHeight = 16.sp,
                     )
                 }
-                Text("$micSensitivity%", color = Amber400, fontSize = 26.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                Text(
+                    "$micSensitivity%",
+                    color = Amber400,
+                    fontSize = 26.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
             }
             Spacer(Modifier.height(12.dp))
             Slider(
@@ -1058,17 +854,29 @@ private fun ControllerDashboard(
         }
 
         SectionCard {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Label("SCREEN WAKE LOCK")
-                    Text("Active — Android keeps the screen on while this app is open.", color = Neutral500, fontSize = 12.sp)
+                    Text(
+                        "Active — Android keeps the screen on while this app is open.",
+                        color = Neutral500,
+                        fontSize = 12.sp
+                    )
                 }
                 StatusChip("STAY ON", Green400)
             }
         }
 
         SectionCard {
-            Text("Connected Devices (${clients.size})", color = Neutral100, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Connected Devices (${clients.size})",
+                color = Neutral100,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.SemiBold
+            )
             Spacer(Modifier.height(14.dp))
             if (clients.isEmpty()) {
                 Box(
@@ -1129,7 +937,10 @@ private fun ClientRow(client: ClientData, running: Boolean) {
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
             Box(
                 modifier = Modifier
                     .size(34.dp)
@@ -1137,9 +948,18 @@ private fun ClientRow(client: ClientData, running: Boolean) {
                     .background(Neutral800),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(client.id.take(2), color = Neutral400, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                Text(
+                    client.id.take(2),
+                    color = Neutral400,
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace
+                )
             }
-            Text(client.deviceName ?: "Unknown Client", color = Neutral100, fontWeight = FontWeight.Medium)
+            Text(
+                client.deviceName ?: "Unknown Client",
+                color = Neutral100,
+                fontWeight = FontWeight.Medium
+            )
         }
         Text(
             text = when {
@@ -1159,286 +979,6 @@ private fun ClientRow(client: ClientData, running: Boolean) {
     }
 }
 
-@Composable
-private fun ClientSession(database: FirebaseDatabase, serverOffset: Long, cameraExecutor: ExecutorService) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val clientId = rememberSaveable { randomClientId() }
-    val motionState = remember { MotionDetectionState() }
-
-    var code by rememberSaveable { mutableStateOf("123") }
-    var deviceName by rememberSaveable { mutableStateOf("Client ${(10..99).random()}") }
-    var joined by rememberSaveable { mutableStateOf(false) }
-    var sessionData by remember { mutableStateOf<SessionData?>(null) }
-    var triggered by rememberSaveable { mutableStateOf(false) }
-    var finalTime by rememberSaveable { mutableStateOf<Long?>(null) }
-    var soundStartTime by rememberSaveable { mutableStateOf<Long?>(null) }
-    var micLevel by remember { mutableIntStateOf(0) }
-    var localTimer by remember { mutableLongStateOf(0L) }
-    var aeLocked by rememberSaveable { mutableStateOf(false) }
-    var previewEnabled by rememberSaveable { mutableStateOf(true) }
-    var cameraActive by rememberSaveable { mutableStateOf(false) }
-    var activeCamera by remember { mutableStateOf<Camera?>(null) }
-
-    SideEffect {
-        motionState.session = sessionData
-        motionState.serverOffset = serverOffset
-        motionState.triggered = triggered
-        motionState.localStartTime = soundStartTime
-    }
-
-    if (!joined) {
-        JoinRaceScreen(
-            code = code,
-            deviceName = deviceName,
-            onCodeChange = { code = it.onlyDigits3() },
-            onDeviceNameChange = { deviceName = it },
-            onJoin = {
-                scope.launch {
-                    runCatching {
-                        playBeep(durationMs = 80)
-                        val clientRef = database.getReference("sessions/$code/clients/$clientId")
-                        clientRef.setValue(
-                            mapOf(
-                                "joinedAt" to System.currentTimeMillis(),
-                                "deviceName" to deviceName.trim(),
-                            ),
-                        ).await()
-                        clientRef.onDisconnect().removeValue()
-                    }.onSuccess {
-                        joined = true
-                    }.onFailure {
-                        toast(context, "Failed to join session: ${it.friendlyMessage()}")
-                    }
-                }
-            },
-        )
-        return
-    }
-
-    DisposableEffect(joined, code, clientId) {
-        val sessionRef = database.getReference("sessions/$code")
-        val listener = object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                sessionData = snapshot.toSessionData()
-            }
-
-            override fun onCancelled(error: DatabaseError) {
-                toast(context, "Session listener failed: ${error.message}")
-            }
-        }
-
-        sessionRef.addValueEventListener(listener)
-        onDispose { sessionRef.removeEventListener(listener) }
-    }
-
-    LaunchedEffect(sessionData?.status) {
-        if (sessionData?.status == "waiting") {
-            triggered = false
-            finalTime = null
-            soundStartTime = null
-            micLevel = 0
-            localTimer = 0L
-            motionState.triggered = false
-            motionState.localStartTime = null
-            motionState.reset()
-        }
-    }
-
-    MicrophoneStartDetector(
-        armed = sessionData?.status == "running" && soundStartTime == null && !triggered,
-        micSensitivity = sessionData?.micSensitivity ?: DEFAULT_MIC_SENSITIVITY,
-        nowNanos = { monotonicNowNanos() },
-        onLevel = { micLevel = it },
-        onStart = { startTime ->
-            if (soundStartTime == null && sessionData?.status == "running") {
-                soundStartTime = startTime
-                motionState.localStartTime = startTime
-                micLevel = 0
-            }
-        },
-    )
-
-    LaunchedEffect(sessionData?.status, soundStartTime, triggered) {
-        while (sessionData?.status == "running" && !triggered) {
-            val startTime = soundStartTime
-            val now = monotonicNowNanos()
-            localTimer = if (startTime != null && now >= startTime) elapsedMillisBetween(startTime, now) else 0L
-            delay(33L)
-        }
-        if (sessionData?.status != "running") {
-            localTimer = 0L
-        }
-    }
-
-    ClientDashboard(
-        code = code,
-        sessionData = sessionData,
-        localTimer = localTimer,
-        timerStarted = soundStartTime != null,
-        micLevel = micLevel,
-        triggered = triggered,
-        finalTime = finalTime,
-        cameraActive = cameraActive,
-        aeLocked = aeLocked,
-        previewEnabled = previewEnabled,
-        onPreviewToggle = { previewEnabled = !previewEnabled },
-        onAeLockToggle = {
-            val nextLocked = !aeLocked
-            aeLocked = nextLocked
-            setAeAwbLock(activeCamera, nextLocked)
-        },
-        cameraContent = {
-            CameraTrapwireView(
-                motionState = motionState,
-                cameraExecutor = cameraExecutor,
-                aeLocked = aeLocked,
-                previewEnabled = previewEnabled,
-                onCameraReady = { camera ->
-                    activeCamera = camera
-                    cameraActive = true
-                    if (aeLocked) setAeAwbLock(camera, true)
-                },
-                onCameraStopped = {
-                    activeCamera = null
-                    cameraActive = false
-                },
-                onElapsedDetected = { elapsed ->
-                    if (!triggered) {
-                        triggered = true
-                        finalTime = elapsed
-                        motionState.triggered = true
-                        scope.launch {
-                            database.getReference("sessions/$code/clients/$clientId/elapsedTime")
-                                .setValue(elapsed)
-                                .awaitSafely(context)
-                        }
-                    }
-                },
-            )
-        },
-    )
-}
-
-@Composable
-private fun JoinRaceScreen(
-    code: String,
-    deviceName: String,
-    onCodeChange: (String) -> Unit,
-    onDeviceNameChange: (String) -> Unit,
-    onJoin: () -> Unit,
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Card(
-            modifier = Modifier.widthIn(max = 380.dp),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = Neutral900),
-            border = BorderStroke(1.dp, Neutral800),
-        ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(18.dp),
-            ) {
-                Text("◎", color = Green500, fontSize = 48.sp, fontWeight = FontWeight.Bold)
-                Text("Join Race", color = Neutral100, fontSize = 25.sp, fontWeight = FontWeight.SemiBold)
-
-                OutlinedTextField(
-                    value = deviceName,
-                    onValueChange = onDeviceNameChange,
-                    label = { Text("Device Name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                )
-
-                CodeField(label = "3-Digit Session Code", code = code, onCodeChange = onCodeChange, accent = Green500)
-
-                Button(
-                    onClick = onJoin,
-                    enabled = code.length == 3 && deviceName.isNotBlank(),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Green600),
-                    shape = RoundedCornerShape(16.dp),
-                ) {
-                    Text("Connect →", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun OfflineJoinRaceScreen(
-    code: String,
-    deviceName: String,
-    searching: Boolean,
-    statusMessage: String,
-    onCodeChange: (String) -> Unit,
-    onDeviceNameChange: (String) -> Unit,
-    onJoin: () -> Unit,
-    onCancel: () -> Unit,
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Card(
-            modifier = Modifier.widthIn(max = 380.dp),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = Neutral900),
-            border = BorderStroke(1.dp, Neutral800),
-        ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(18.dp),
-            ) {
-                Text("⌂", color = Amber400, fontSize = 48.sp, fontWeight = FontWeight.Bold)
-                Text("Join BLE", color = Neutral100, fontSize = 25.sp, fontWeight = FontWeight.SemiBold)
-
-                OutlinedTextField(
-                    value = deviceName,
-                    onValueChange = onDeviceNameChange,
-                    label = { Text("Device Name") },
-                    singleLine = true,
-                    enabled = !searching,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                )
-
-                CodeField(label = "3-Digit Code", code = code, onCodeChange = onCodeChange, accent = Amber400)
-                Text(statusMessage, color = Neutral500, fontSize = 13.sp, textAlign = TextAlign.Center)
-
-                Button(
-                    onClick = if (searching) onCancel else onJoin,
-                    enabled = searching || (code.length == 3 && deviceName.isNotBlank()),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = if (searching) Neutral800 else Amber400),
-                    shape = RoundedCornerShape(16.dp),
-                ) {
-                    Text(
-                        if (searching) "Stop" else "Find Controller",
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (searching) Neutral100 else Color.Black,
-                    )
-                }
-            }
-        }
-    }
-}
 
 @Composable
 private fun ClientDashboard(
@@ -1475,7 +1015,10 @@ private fun ClientDashboard(
             cameraContent()
 
             Canvas(modifier = Modifier.fillMaxSize()) {
-                val lineColor = if (sessionData?.status == "running" && !triggered) Red500.copy(alpha = 0.85f) else Neutral400.copy(alpha = 0.55f)
+                val lineColor =
+                    if (sessionData?.status == "running" && !triggered) Red500.copy(alpha = 0.85f) else Neutral400.copy(
+                        alpha = 0.55f
+                    )
                 drawLine(
                     color = lineColor,
                     start = Offset(size.width / 2f, 0f),
@@ -1514,8 +1057,19 @@ private fun ClientDashboard(
                 ) {
                     Text("✓", color = Color.Black, fontSize = 34.sp, fontWeight = FontWeight.Bold)
                     Column {
-                        Text("TRIGGERED", color = Color.Black.copy(alpha = 0.72f), fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        Text(formatSeconds(finalTime), color = Color.Black, fontSize = 30.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                        Text(
+                            "TRIGGERED",
+                            color = Color.Black.copy(alpha = 0.72f),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            formatSeconds(finalTime),
+                            color = Color.Black,
+                            fontSize = 30.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
                     }
                 }
             }
@@ -1530,129 +1084,176 @@ private fun ClientDashboard(
         )
 
         Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(Neutral900)
-                    .border(1.dp, Neutral800, RoundedCornerShape(22.dp))
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column {
-                    Label("CODE")
-                    Text(code, color = Neutral100, fontSize = 22.sp, fontFamily = FontFamily.Monospace, letterSpacing = 4.sp)
-                }
-                StatusChip(
-                    text = when {
-                        sessionData?.status != "running" -> "WAITING"
-                        timerStarted -> "TIMING"
-                        else -> "LISTENING"
-                    },
-                    color = when {
-                        sessionData?.status != "running" -> Green400
-                        timerStarted -> Red500
-                        else -> Amber400
-                    },
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(Neutral900)
+                .border(1.dp, Neutral800, RoundedCornerShape(22.dp))
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column {
+                Label("CODE")
+                Text(
+                    code,
+                    color = Neutral100,
+                    fontSize = 22.sp,
+                    fontFamily = FontFamily.Monospace,
+                    letterSpacing = 4.sp
                 )
             }
-
-            SectionCard {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Column(Modifier.weight(1f)) {
-                        Label("EXPOSURE & FOCUS CONTROL")
-                        Text(
-                            if (aeLocked) "Camera locked (no brightness shift)" else "Camera auto-adjusting",
-                            color = Neutral100,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        TinyText("Native Android CameraX preview + analyzer")
-                    }
-                    Button(
-                        onClick = onAeLockToggle,
-                        enabled = cameraActive,
-                        colors = ButtonDefaults.buttonColors(containerColor = if (aeLocked) Amber400.copy(alpha = 0.18f) else Green500.copy(alpha = 0.18f)),
-                        shape = RoundedCornerShape(14.dp),
-                    ) {
-                        Text(if (aeLocked) "Unlock" else "Lock", color = if (aeLocked) Amber400 else Green400, fontSize = 12.sp)
-                    }
-                }
-            }
-
-            SectionCard {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Column(Modifier.weight(1f)) {
-                        Label("CAMERA PREVIEW")
-                        Text(
-                            if (previewEnabled) "Preview visible — analyzer running" else "Preview hidden — analyzer still running",
-                            color = Neutral100,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        TinyText("Turn preview off to reduce screen load while keeping finish detection active.")
-                    }
-                    Button(
-                        onClick = onPreviewToggle,
-                        enabled = cameraActive,
-                        colors = ButtonDefaults.buttonColors(containerColor = if (previewEnabled) Neutral800 else Blue500.copy(alpha = 0.18f)),
-                        shape = RoundedCornerShape(14.dp),
-                    ) {
-                        Text(if (previewEnabled) "Hide" else "Show", color = if (previewEnabled) Neutral100 else Blue500, fontSize = 12.sp)
-                    }
-                }
-            }
-
-            SectionCard {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Column(Modifier.weight(1f)) {
-                        Label("MOTION SENSITIVITY")
-                        Text(
-                            "Set by controller: ${sessionData?.sensitivity ?: DEFAULT_SENSITIVITY}%",
-                            color = Neutral100,
-                            fontSize = 14.sp,
-                        )
-                    }
-                    Text(
-                        "${thresholdForSensitivity(sessionData?.sensitivity ?: DEFAULT_SENSITIVITY)} diff",
-                        color = Neutral400,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(Neutral950)
-                            .border(1.dp, Neutral800, RoundedCornerShape(10.dp))
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                    )
-                }
-            }
-
-            SectionCard {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Column(Modifier.weight(1f)) {
-                        Label("MICROPHONE START")
-                        Text(
-                            if (sessionData?.status == "running" && !timerStarted) "Listening for controller beep" else if (timerStarted) "Timer started from sound" else "Waiting for controller start",
-                            color = Neutral100,
-                            fontSize = 14.sp,
-                        )
-                        TinyText("Sensitivity ${sessionData?.micSensitivity ?: DEFAULT_MIC_SENSITIVITY}% • level gate ${microphoneThresholdForSensitivity(sessionData?.micSensitivity ?: DEFAULT_MIC_SENSITIVITY)}% • WAV pattern match")
-                    }
-                    Text(
-                        "$micLevel%",
-                        color = if (sessionData?.status == "running" && !timerStarted) Amber400 else Neutral400,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
-            }
+            StatusChip(
+                text = when {
+                    sessionData?.status != "running" -> "WAITING"
+                    timerStarted -> "TIMING"
+                    else -> "LISTENING"
+                },
+                color = when {
+                    sessionData?.status != "running" -> Green400
+                    timerStarted -> Red500
+                    else -> Amber400
+                },
+            )
+        }
 
         SectionCard {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Label("EXPOSURE & FOCUS CONTROL")
+                    Text(
+                        if (aeLocked) "Camera locked (no brightness shift)" else "Camera auto-adjusting",
+                        color = Neutral100,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    TinyText("Native Android CameraX preview + analyzer")
+                }
+                Button(
+                    onClick = onAeLockToggle,
+                    enabled = cameraActive,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (aeLocked) Amber400.copy(
+                            alpha = 0.18f
+                        ) else Green500.copy(alpha = 0.18f)
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Text(
+                        if (aeLocked) "Unlock" else "Lock",
+                        color = if (aeLocked) Amber400 else Green400,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+
+        SectionCard {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Label("CAMERA PREVIEW")
+                    Text(
+                        if (previewEnabled) "Preview visible — analyzer running" else "Preview hidden — analyzer still running",
+                        color = Neutral100,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    TinyText("Turn preview off to reduce screen load while keeping finish detection active.")
+                }
+                Button(
+                    onClick = onPreviewToggle,
+                    enabled = cameraActive,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (previewEnabled) Neutral800 else Blue500.copy(
+                            alpha = 0.18f
+                        )
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Text(
+                        if (previewEnabled) "Hide" else "Show",
+                        color = if (previewEnabled) Neutral100 else Blue500,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+
+        SectionCard {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Label("MOTION SENSITIVITY")
+                    Text(
+                        "Set by controller: ${sessionData?.sensitivity ?: DEFAULT_SENSITIVITY}%",
+                        color = Neutral100,
+                        fontSize = 14.sp,
+                    )
+                }
+                Text(
+                    "${thresholdForSensitivity(sessionData?.sensitivity ?: DEFAULT_SENSITIVITY)} diff",
+                    color = Neutral400,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Neutral950)
+                        .border(1.dp, Neutral800, RoundedCornerShape(10.dp))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
+        }
+
+        SectionCard {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Label("MICROPHONE START")
+                    Text(
+                        if (sessionData?.status == "running" && !timerStarted) "Listening for controller beep" else if (timerStarted) "Timer started from sound" else "Waiting for controller start",
+                        color = Neutral100,
+                        fontSize = 14.sp,
+                    )
+                    TinyText(
+                        "Sensitivity ${sessionData?.micSensitivity ?: DEFAULT_MIC_SENSITIVITY}% • level gate ${
+                            microphoneThresholdForSensitivity(
+                                sessionData?.micSensitivity ?: DEFAULT_MIC_SENSITIVITY
+                            )
+                        }% • WAV pattern match"
+                    )
+                }
+                Text(
+                    "$micLevel%",
+                    color = if (sessionData?.status == "running" && !timerStarted) Amber400 else Neutral400,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+
+        SectionCard {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
                 Column(Modifier.weight(1f)) {
                     Label("SCREEN WAKE LOCK")
-                    Text("Active — Android keeps the screen turned on.", color = Neutral100, fontSize = 14.sp)
+                    Text(
+                        "Active — Android keeps the screen turned on.",
+                        color = Neutral100,
+                        fontSize = 14.sp
+                    )
                 }
                 StatusChip("STAY ON", Green400)
             }
@@ -1672,12 +1273,21 @@ private fun MicrophoneStartDetector(
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val beepPattern = remember(context) { loadStarterBeepPattern(context) }
     var hasPermission by remember {
-        mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+        )
     }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        hasPermission = granted
-        if (!granted) toast(context, "Microphone permission is required to start the timer from the beep.")
-    }
+    val launcher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            hasPermission = granted
+            if (!granted) toast(
+                context,
+                "Microphone permission is required to start the timer from the beep."
+            )
+        }
 
     LaunchedEffect(armed) {
         if (armed && !hasPermission) launcher.launch(Manifest.permission.RECORD_AUDIO)
@@ -1698,7 +1308,12 @@ private fun MicrophoneStartDetector(
                     nowNanos = nowNanos,
                 )
             }.onFailure {
-                mainHandler.post { toast(context, "Microphone listener failed: ${it.friendlyMessage()}") }
+                mainHandler.post {
+                    toast(
+                        context,
+                        "Microphone listener failed: ${it.friendlyMessage()}"
+                    )
+                }
             }
         }.apply { start() }
 
@@ -1709,7 +1324,11 @@ private fun MicrophoneStartDetector(
 }
 
 @Suppress("MissingPermission")
-private fun createStartBeepAudioRecord(context: Context, sampleRate: Int, bufferSize: Int): AudioRecord? {
+private fun createStartBeepAudioRecord(
+    context: Context,
+    sampleRate: Int,
+    bufferSize: Int
+): AudioRecord? {
     val preferredSources = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
         intArrayOf(
             MediaRecorder.AudioSource.UNPROCESSED,
@@ -1723,11 +1342,12 @@ private fun createStartBeepAudioRecord(context: Context, sampleRate: Int, buffer
         )
     }
     val preferredMic = preferredPrimaryBuiltInMic(context)
-    val preferredDevices = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && preferredMic != null) {
-        arrayOf<AudioDeviceInfo?>(preferredMic, null)
-    } else {
-        arrayOf<AudioDeviceInfo?>(null)
-    }
+    val preferredDevices =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && preferredMic != null) {
+            arrayOf<AudioDeviceInfo?>(preferredMic, null)
+        } else {
+            arrayOf<AudioDeviceInfo?>(null)
+        }
 
     for (source in preferredSources) {
         for (preferredDevice in preferredDevices) {
@@ -1756,8 +1376,8 @@ private fun createStartBeepAudioRecord(context: Context, sampleRate: Int, buffer
             }.getOrNull() ?: continue
 
             val preferredRouteAccepted = preferredDevice == null ||
-                Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
-                recorder.setPreferredDevice(preferredDevice)
+                    Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                    recorder.setPreferredDevice(preferredDevice)
             if (recorder.state == AudioRecord.STATE_INITIALIZED && preferredRouteAccepted) return recorder
             recorder.release()
         }
@@ -1780,22 +1400,24 @@ private fun preferredPrimaryBuiltInMic(context: Context): AudioDeviceInfo? {
         null
     }
 
-    val preferredDevice = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && preferredAddress != null) {
-        builtInInputs.firstOrNull { audioDeviceAddress(it) == preferredAddress }
-    } else {
-        null
-    }
+    val preferredDevice =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && preferredAddress != null) {
+            builtInInputs.firstOrNull { audioDeviceAddress(it) == preferredAddress }
+        } else {
+            null
+        }
 
     return preferredDevice ?: builtInInputs.maxByOrNull { audioDevicePreferenceScore(it) }
 }
 
 @RequiresApi(Build.VERSION_CODES.P)
-private fun preferredBuiltInMicAddress(audioManager: AudioManager): String? = runCatching { audioManager.microphones }
-    .getOrNull()
-    ?.filter { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
-    ?.maxByOrNull { microphonePreferenceScore(it) }
-    ?.address
-    ?.takeIf { it.isNotBlank() }
+private fun preferredBuiltInMicAddress(audioManager: AudioManager): String? =
+    runCatching { audioManager.microphones }
+        .getOrNull()
+        ?.filter { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+        ?.maxByOrNull { microphonePreferenceScore(it) }
+        ?.address
+        ?.takeIf { it.isNotBlank() }
 
 @RequiresApi(Build.VERSION_CODES.P)
 private fun microphonePreferenceScore(microphoneInfo: MicrophoneInfo): Int {
@@ -1806,7 +1428,8 @@ private fun microphonePreferenceScore(microphoneInfo: MicrophoneInfo): Int {
 }
 
 private fun audioDevicePreferenceScore(audioDeviceInfo: AudioDeviceInfo): Int {
-    val address = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) audioDeviceAddress(audioDeviceInfo) else ""
+    val address =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) audioDeviceAddress(audioDeviceInfo) else ""
     val hint = listOf(audioDeviceInfo.productName?.toString().orEmpty(), address)
         .joinToString(" ")
         .lowercase(Locale.US)
@@ -1849,7 +1472,8 @@ private fun listenForStartBeep(
     val samples = ShortArray(bufferSize / 2)
     val threshold = microphoneThresholdForSensitivity(micSensitivity)
     val rollingAudio = pattern?.let { RollingAudioWindow(it.samples.size) }
-    val patternGraceNanos = ((pattern?.durationMs ?: 0L) + START_SHOT_PATTERN_MATCH_GRACE_MS) * NANOS_PER_MILLISECOND
+    val patternGraceNanos =
+        ((pattern?.durationMs ?: 0L) + START_SHOT_PATTERN_MATCH_GRACE_MS) * NANOS_PER_MILLISECOND
     var candidateStartNanos: Long? = null
 
     try {
@@ -1885,7 +1509,11 @@ private fun listenForStartBeep(
             if (pattern != null && rollingAudio != null && candidate != null) {
                 if (readEndNanos - candidate > patternGraceNanos) {
                     candidateStartNanos = null
-                } else if (rollingAudio.isReady && matchesStarterBeep(rollingAudio.samples, pattern)) {
+                } else if (rollingAudio.isReady && matchesStarterBeep(
+                        rollingAudio.samples,
+                        pattern
+                    )
+                ) {
                     onStart(candidate)
                     return
                 }
@@ -1930,7 +1558,9 @@ private class RollingAudioWindow(private val capacity: Int) {
 
 private fun loadStarterBeepPattern(context: Context): StartBeepPattern? {
     return runCatching {
-        val wavBytes = context.resources.openRawResource(R.raw.floraphonic_triangle_beep_short_4_185307).use { it.readBytes() }
+        val wavBytes =
+            context.resources.openRawResource(R.raw.floraphonic_triangle_beep_short_4_185307)
+                .use { it.readBytes() }
         val decoded = decodePcmWav(wavBytes) ?: return@runCatching null
         val resampled = resamplePcm(decoded.samples, decoded.sampleRate, START_BEEP_SAMPLE_RATE)
         val activeSamples = focusStartShotPattern(trimSilence(resampled))
@@ -2006,7 +1636,8 @@ private fun decodePcmWav(bytes: ByteArray): PcmWav? {
             total += value
             position += bytesPerSample
         }
-        samples[frame] = (total / channels).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+        samples[frame] =
+            (total / channels).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
     }
     return PcmWav(sampleRate, samples)
 }
@@ -2023,15 +1654,15 @@ private fun readLeShort(bytes: ByteArray, offset: Int): Short {
 
 private fun readLeInt(bytes: ByteArray, offset: Int): Int {
     return (bytes[offset].toInt() and 0xFF) or
-        ((bytes[offset + 1].toInt() and 0xFF) shl 8) or
-        ((bytes[offset + 2].toInt() and 0xFF) shl 16) or
-        ((bytes[offset + 3].toInt() and 0xFF) shl 24)
+            ((bytes[offset + 1].toInt() and 0xFF) shl 8) or
+            ((bytes[offset + 2].toInt() and 0xFF) shl 16) or
+            ((bytes[offset + 3].toInt() and 0xFF) shl 24)
 }
 
 private fun readSigned24Le(bytes: ByteArray, offset: Int): Int {
     var value = (bytes[offset].toInt() and 0xFF) or
-        ((bytes[offset + 1].toInt() and 0xFF) shl 8) or
-        ((bytes[offset + 2].toInt() and 0xFF) shl 16)
+            ((bytes[offset + 1].toInt() and 0xFF) shl 8) or
+            ((bytes[offset + 2].toInt() and 0xFF) shl 16)
     if ((value and 0x800000) != 0) value = value or -0x1000000
     return value
 }
@@ -2074,7 +1705,8 @@ private fun trimSilence(samples: ShortArray): ShortArray {
 private fun focusStartShotPattern(samples: ShortArray): ShortArray {
     if (samples.isEmpty()) return samples
 
-    val maxSamples = ((START_BEEP_SAMPLE_RATE * START_SHOT_PATTERN_MAX_MS) / 1_000L).toInt().coerceAtLeast(1)
+    val maxSamples =
+        ((START_BEEP_SAMPLE_RATE * START_SHOT_PATTERN_MAX_MS) / 1_000L).toInt().coerceAtLeast(1)
     if (samples.size <= maxSamples) return samples
 
     var peakIndex = 0
@@ -2102,7 +1734,7 @@ private fun matchesStarterBeep(samples: ShortArray, pattern: StartBeepPattern): 
     val measuredHz = estimateZeroCrossFrequency(samples, pattern.sampleRate)
     val shortTransient = pattern.durationMs <= START_SHOT_PATTERN_MAX_MS
     val frequencyOk = shortTransient || pattern.zeroCrossHz < 80f || measuredHz <= 0f ||
-        (kotlin.math.abs(measuredHz - pattern.zeroCrossHz) / pattern.zeroCrossHz) <= START_BEEP_FREQUENCY_TOLERANCE
+            (kotlin.math.abs(measuredHz - pattern.zeroCrossHz) / pattern.zeroCrossHz) <= START_BEEP_FREQUENCY_TOLERANCE
     val confidence = if (shortTransient) {
         (envelopeScore * 0.70f) + (waveScore * 0.30f)
     } else {
@@ -2205,23 +1837,40 @@ private fun CameraTrapwireView(
     val lifecycleOwner = LocalLifecycleOwner.current
     val mainExecutor = remember(context) { ContextCompat.getMainExecutor(context) }
     var hasPermission by remember {
-        mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+        )
     }
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
 
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        hasPermission = granted
-        if (!granted) toast(context, "Camera permission is required for client trapwire mode.")
-    }
+    val permissionLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            hasPermission = granted
+            if (!granted) toast(context, "Camera permission is required for client trapwire mode.")
+        }
 
     LaunchedEffect(Unit) {
         if (!hasPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
     if (!hasPermission) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text("Camera permission needed", color = Neutral100, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-            Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }, shape = RoundedCornerShape(14.dp)) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(
+                "Camera permission needed",
+                color = Neutral100,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Button(
+                onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
+                shape = RoundedCornerShape(14.dp)
+            ) {
                 Text("Grant Camera Access")
             }
         }
@@ -2251,7 +1900,12 @@ private fun CameraTrapwireView(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Text("Preview off", color = Neutral100, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Preview off",
+                color = Neutral100,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.SemiBold
+            )
             TinyText("Camera analyzer remains active")
         }
     }
@@ -2311,9 +1965,21 @@ private fun bindCameraWithFallback(
     analysis: ImageAnalysis,
 ): Camera {
     return runCatching {
-        bindCameraUseCases(cameraProvider, lifecycleOwner, CameraSelector.DEFAULT_FRONT_CAMERA, preview, analysis)
+        bindCameraUseCases(
+            cameraProvider,
+            lifecycleOwner,
+            CameraSelector.DEFAULT_FRONT_CAMERA,
+            preview,
+            analysis
+        )
     }.getOrElse {
-        bindCameraUseCases(cameraProvider, lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+        bindCameraUseCases(
+            cameraProvider,
+            lifecycleOwner,
+            CameraSelector.DEFAULT_BACK_CAMERA,
+            preview,
+            analysis
+        )
     }
 }
 
@@ -2394,6 +2060,7 @@ private fun ImageProxy.frameTimestampNanosOrFallback(): Long {
     val skew = kotlin.math.abs(fallback - sensorTimestamp)
     return if (skew <= CAMERA_SENSOR_TIMESTAMP_MAX_SKEW_NANOS) sensorTimestamp else fallback
 }
+
 private fun ByteArray.toFloatBackground(): FloatArray {
     return FloatArray(size) { index -> (this[index].toInt() and 0xFF).toFloat() }
 }
@@ -2401,7 +2068,8 @@ private fun ByteArray.toFloatBackground(): FloatArray {
 private fun FloatArray.updateFrom(current: ByteArray) {
     for (i in indices) {
         val currentValue = (current[i].toInt() and 0xFF).toFloat()
-        this[i] = TRAPWIRE_BACKGROUND_KEEP_WEIGHT * this[i] + TRAPWIRE_BACKGROUND_NEW_WEIGHT * currentValue
+        this[i] =
+            TRAPWIRE_BACKGROUND_KEEP_WEIGHT * this[i] + TRAPWIRE_BACKGROUND_NEW_WEIGHT * currentValue
     }
 }
 
@@ -2512,7 +2180,13 @@ private fun StatusChip(text: String, color: Color) {
 
 @Composable
 private fun Label(text: String) {
-    Text(text, color = Neutral500, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+    Text(
+        text,
+        color = Neutral500,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 0.8.sp
+    )
 }
 
 @Composable
@@ -2528,12 +2202,23 @@ private fun BlePermissionsGate(
     val context = LocalContext.current
     val permissions = remember { requiredBlePermissions() }
     var granted by remember {
-        mutableStateOf(permissions.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED })
+        mutableStateOf(permissions.all {
+            ContextCompat.checkSelfPermission(
+                context,
+                it
+            ) == PackageManager.PERMISSION_GRANTED
+        })
     }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-        granted = permissions.all { result[it] == true || ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
-        if (!granted) toast(context, "BLE permissions are required for offline mode.")
-    }
+    val launcher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            granted = permissions.all {
+                result[it] == true || ContextCompat.checkSelfPermission(
+                    context,
+                    it
+                ) == PackageManager.PERMISSION_GRANTED
+            }
+            if (!granted) toast(context, "BLE permissions are required for offline mode.")
+        }
 
     LaunchedEffect(Unit) {
         if (!granted && permissions.isNotEmpty()) launcher.launch(permissions)
@@ -2549,11 +2234,19 @@ private fun BlePermissionsGate(
             contentAlignment = Alignment.Center,
         ) {
             SectionCard {
-                Text("BLE permission needed", color = Neutral100, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "BLE permission needed",
+                    color = Neutral100,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
                 Spacer(Modifier.height(8.dp))
                 Text(description, color = Neutral500, fontSize = 14.sp)
                 Spacer(Modifier.height(16.dp))
-                Button(onClick = { launcher.launch(permissions) }, shape = RoundedCornerShape(14.dp)) {
+                Button(
+                    onClick = { launcher.launch(permissions) },
+                    shape = RoundedCornerShape(14.dp)
+                ) {
                     Text("Grant BLE Access")
                 }
             }
@@ -2589,7 +2282,10 @@ private fun SessionData.toJson(): JSONObject {
     json.put("createdAt", createdAt)
     json.put("sensitivity", sensitivity)
     json.put("micSensitivity", micSensitivity)
-    if (startTime == null) json.put("startTime", JSONObject.NULL) else json.put("startTime", startTime)
+    if (startTime == null) json.put("startTime", JSONObject.NULL) else json.put(
+        "startTime",
+        startTime
+    )
     return json
 }
 
@@ -2646,38 +2342,6 @@ private fun MutableList<ClientData>.upsert(client: ClientData) {
     if (index >= 0) this[index] = client else add(client)
 }
 
-private fun DataSnapshot.toSessionData(): SessionData? {
-    if (!exists()) return null
-    return SessionData(
-        status = child("status").getValue(String::class.java) ?: "waiting",
-        createdAt = child("createdAt").longValue() ?: 0L,
-        startTime = child("startTime").longValue(),
-        sensitivity = child("sensitivity").intValue() ?: DEFAULT_SENSITIVITY,
-        micSensitivity = child("micSensitivity").intValue() ?: DEFAULT_MIC_SENSITIVITY,
-    )
-}
-
-private fun DataSnapshot.toClientData(): ClientData? {
-    val key = key ?: return null
-    return ClientData(
-        id = key,
-        joinedAt = child("joinedAt").longValue() ?: 0L,
-        elapsedTime = child("elapsedTime").longValue(),
-        deviceName = child("deviceName").getValue(String::class.java),
-    )
-}
-
-private fun DataSnapshot.longValue(): Long? {
-    return getValue(Long::class.java) ?: getValue(Double::class.java)?.toLong() ?: getValue(Int::class.java)?.toLong()
-}
-
-private fun DataSnapshot.intValue(): Int? {
-    return getValue(Int::class.java) ?: getValue(Long::class.java)?.toInt() ?: getValue(Double::class.java)?.toInt()
-}
-
-private suspend fun com.google.android.gms.tasks.Task<Void>.awaitSafely(context: Context) {
-    runCatching { await() }.onFailure { toast(context, "Firebase update failed: ${it.friendlyMessage()}") }
-}
 
 private fun String.onlyDigits3(): String = filter { it.isDigit() }.take(3)
 
@@ -2722,7 +2386,8 @@ private fun toast(context: Context, message: String) {
     Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
 }
 
-private fun Throwable.friendlyMessage(): String = localizedMessage ?: message ?: javaClass.simpleName
+private fun Throwable.friendlyMessage(): String =
+    localizedMessage ?: message ?: javaClass.simpleName
 
 @SuppressLint("UnsafeOptInUsageError")
 private fun setAeAwbLock(camera: Camera?, locked: Boolean) {
@@ -2732,7 +2397,10 @@ private fun setAeAwbLock(camera: Camera?, locked: Boolean) {
         .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK, locked)
         .apply {
             if (locked) {
-                setCaptureRequestOption(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+                setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AF_TRIGGER,
+                    CaptureRequest.CONTROL_AF_TRIGGER_START
+                )
             }
         }
         .build()
