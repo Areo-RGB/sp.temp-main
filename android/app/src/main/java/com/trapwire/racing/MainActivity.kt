@@ -296,7 +296,7 @@ private fun TrapwireApp(cameraExecutor: ExecutorService) {
 
             "clientMode" -> BackendSelectionScreen(
                 title = "Client Sync",
-                subtitle = "Use the same sync mode as the controller.",
+                subtitle = "Offline BLE is the only client sync mode.",
                 onFirebaseSelected = { screen = "clientFirebase" },
                 onOfflineSelected = { screen = "clientOffline" },
             )
@@ -408,13 +408,6 @@ private fun BackendSelectionScreen(
 
             Spacer(Modifier.height(8.dp))
 
-            RoleButton(
-                title = "Firebase",
-                subtitle = "Internet-backed realtime room sync",
-                symbol = "☁",
-                tint = Blue500,
-                onClick = onFirebaseSelected,
-            )
 
             RoleButton(
                 title = "Offline BLE",
